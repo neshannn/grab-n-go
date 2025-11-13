@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { menuAPI, categoryAPI } from '../services/api';
 import { useToast } from './ToastProvider';
@@ -62,7 +61,7 @@ function Menu({ user, onAddToCart }) {
 
   const handleMenuItemAdd = (added) => {
     if (!added || !added.item_id) return;
-    setMenuItems((prev) => {
+        setMenuItems((prev) => {
       const exists = prev.some((it) => it.item_id === added.item_id);
       return exists ? prev.map((it) => (it.item_id === added.item_id ? { ...it, ...added } : it)) : [...prev, added];
     });

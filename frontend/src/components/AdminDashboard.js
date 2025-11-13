@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { menuAPI, categoryAPI, orderAPI, adminAPI } from '../services/api';
 import { getSocket } from '../services/realtime';
@@ -65,7 +64,15 @@ function AdminDashboard() {
         await menuAPI.updateItem(editingItem.item_id, payload);
         alert('Menu item updated successfully!');
       } else {
-        await menuAPI.addItem(payload);
+        console.log('Adding menu item:', payload);
+        const response = await menuAPI.addItem(payload);
+        console.log('Item added response:', response);
+        try {
+          const socket = getSocket();
+          socket.emit('menu:item:add', payload);
+        } catch (socketErr) {
+          console.error('WebSocket emit error:', socketErr);
+        }
         alert('Menu item added successfully!');
       }
       setShowAddForm(false);
@@ -78,10 +85,13 @@ function AdminDashboard() {
         image_url: '',
         is_available: true
       });
-      fetchMenuItems();
+      // Fetch updated menu items
+      await fetchMenuItems();
     } catch (error) {
-      const msg = error.response?.data?.error || 'Failed to save menu item';
+      console.error('Error submitting form:', error);
+      const msg = error.response?.data?.error || error.message || 'Failed to save menu item';
       setFormError(msg);
+      alert(`Error: ${msg}`);
     }
   };
 

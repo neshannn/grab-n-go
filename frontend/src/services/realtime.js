@@ -5,7 +5,7 @@ let socket;
 export function getSocket() {
   if (!socket) {
     const token = localStorage.getItem('token');
-    socket = io('/', { // CRA proxy will forward to backend
+    socket = io('http://localhost:5000', {
       path: '/socket.io',
       transports: ['websocket'],
       auth: token ? { token } : undefined,

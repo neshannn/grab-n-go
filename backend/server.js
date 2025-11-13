@@ -13,7 +13,7 @@ const http = require('http').createServer(app);
 const { Server } = require('socket.io');
 
 // Middleware
-const allowedOrigin = process.env.CORS_ORIGIN || 'http://localhost:3000';
+const allowedOrigin = process.env.CORS_ORIGIN || 'http://localhost:3001';
 app.use(cors({ origin: allowedOrigin, methods: ['GET','POST','PUT','DELETE','OPTIONS'], allowedHeaders: ['Content-Type','Authorization'] }));
 app.use(helmet());
 app.use(morgan('dev'));
@@ -286,6 +286,7 @@ app.put('/api/menu/:id', authenticateToken, (req, res) => {
       res.json({ message: 'Menu item updated successfully' });
     });
   });
+});
 
 // Delete Menu Item (Admin only)
 app.delete('/api/menu/:id', authenticateToken, (req, res) => {
@@ -307,7 +308,6 @@ app.delete('/api/menu/:id', authenticateToken, (req, res) => {
     } catch (_e) {}
     res.json({ message: 'Menu item deleted successfully' });
   });
-});
 });
 
 // ==================== ORDER ROUTES ====================
