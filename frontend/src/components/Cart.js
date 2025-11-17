@@ -92,7 +92,7 @@ function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
               
               <div className="cart-item-details">
                 <h3>{item.item_name}</h3>
-                <p className="cart-item-price">₹{item.price}</p>
+                <p className="cart-item-price">Rs {item.price}</p>
               </div>
               
               <div className="cart-item-quantity">
@@ -112,7 +112,7 @@ function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
               </div>
               
               <div className="cart-item-subtotal">
-                <p>₹{(item.price * item.quantity).toFixed(2)}</p>
+                <p>Rs {(item.price * item.quantity).toFixed(2)}</p>
               </div>
               
               <button
@@ -130,12 +130,12 @@ function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
           
           <div className="summary-row">
             <span>Subtotal:</span>
-            <span>₹{calculateTotal().toFixed(2)}</span>
+            <span>Rs{calculateTotal().toFixed(2)}</span>
           </div>
           
           <div className="summary-row total">
             <span>Total:</span>
-            <span>₹{calculateTotal().toFixed(2)}</span>
+            <span>Rs{calculateTotal().toFixed(2)}</span>
           </div>
 
           <div className="payment-method">

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { menuAPI, categoryAPI } from '../services/api';
 import { useToast } from './ToastProvider';
 import { getSocket } from '../services/realtime';
@@ -14,63 +14,106 @@ function Menu({ user, onAddToCart }) {
 
   const { showToast } = useToast();
 
-  useEffect(() => {
-    fetchData();
-    let socket;
+  const fetchData = useCallback(async () => {
     try {
-      socket = getSocket();
-      socket.on('menu:item:update', handleMenuItemUpdate);
-      socket.on('menu:item:add', handleMenuItemAdd);
-      socket.on('menu:item:delete', handleMenuItemDelete);
-    } catch (_e) {}
-    return () => {
-      try {
-        socket && socket.off('menu:item:update', handleMenuItemUpdate);
-        socket && socket.off('menu:item:add', handleMenuItemAdd);
-        socket && socket.off('menu:item:delete', handleMenuItemDelete);
-      } catch (_e) {}
-    };
-  }, []);
-
-  const fetchData = async () => {
-    try {
+      setLoading(true);
       const [menuResponse, categoryResponse] = await Promise.all([
         menuAPI.getAllItems(),
         categoryAPI.getAllCategories(),
       ]);
       
+      console.log('Menu items fetched:', menuResponse.data);
       setMenuItems(menuResponse.data);
       setCategories(categoryResponse.data);
-      setLoading(false);
+      setError('');
     } catch (err) {
+      console.error('Failed to load menu:', err);
       setError('Failed to load menu items');
+      setMenuItems([]);
+    } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  // Handle real-time menu updates
+  const handleMenuItemUpdate = useCallback((updated) => {
+    if (!updated || !updated.item_id) {
+      console.warn('Invalid update data:', updated);
+      return;
+    }
+    console.log('Menu item updated:', updated);
+    setMenuItems((prev) =>
+      prev.map((it) => (it.item_id === updated.item_id ? { ...it, ...updated } : it))
+    );
+  }, []);
+
+  // Handle new menu items being added
+  const handleMenuItemAdd = useCallback((added) => {
+    if (!added || !added.item_id) {
+      console.warn('Invalid add data:', added);
+      return;
+    }
+    console.log('Menu item added:', added);
+    setMenuItems((prev) => {
+      const exists = prev.some((it) => it.item_id === added.item_id);
+      if (exists) {
+        // Item already exists, update it
+        return prev.map((it) =>
+          it.item_id === added.item_id ? { ...it, ...added } : it
+        );
+      } else {
+        // New item, add it to the list
+        return [...prev, added];
+      }
+    });
+  }, []);
+
+  // Handle menu item deletion
+  const handleMenuItemDelete = useCallback(({ item_id }) => {
+    if (!item_id) {
+      console.warn('Invalid delete data:', item_id);
+      return;
+    }
+    console.log('Menu item deleted:', item_id);
+    setMenuItems((prev) => prev.filter((it) => it.item_id !== item_id));
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+    
+    let socket;
+    try {
+      socket = getSocket();
+      
+      // Set up socket listeners
+      socket.on('menu:item:add', handleMenuItemAdd);
+      socket.on('menu:item:update', handleMenuItemUpdate);
+      socket.on('menu:item:delete', handleMenuItemDelete);
+      
+      console.log('Socket listeners registered for menu updates');
+    } catch (err) {
+      console.warn('Socket connection failed:', err);
+    }
+
+    return () => {
+      try {
+        if (socket) {
+          socket.off('menu:item:add', handleMenuItemAdd);
+          socket.off('menu:item:update', handleMenuItemUpdate);
+          socket.off('menu:item:delete', handleMenuItemDelete);
+        }
+      } catch (_e) {}
+    };
+  }, [fetchData, handleMenuItemAdd, handleMenuItemUpdate, handleMenuItemDelete]);
 
   const filteredItems = menuItems.filter((item) => {
-    const matchesCategory = selectedCategory === 'all' || item.category_id === parseInt(selectedCategory);
-    const matchesSearch = item.item_name.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesCategory =
+      selectedCategory === 'all' || item.category_id === parseInt(selectedCategory);
+    const matchesSearch = item.item_name
+      .toLowerCase()
+      .includes(searchTerm.toLowerCase());
     return matchesCategory && matchesSearch;
   });
-
-  const handleMenuItemUpdate = (updated) => {
-    if (!updated || !updated.item_id) return;
-    setMenuItems((prev) => prev.map((it) => (it.item_id === updated.item_id ? { ...it, ...updated } : it)));
-  };
-
-  const handleMenuItemAdd = (added) => {
-    if (!added || !added.item_id) return;
-        setMenuItems((prev) => {
-      const exists = prev.some((it) => it.item_id === added.item_id);
-      return exists ? prev.map((it) => (it.item_id === added.item_id ? { ...it, ...added } : it)) : [...prev, added];
-    });
-  };
-
-  const handleMenuItemDelete = ({ item_id }) => {
-    if (!item_id) return;
-    setMenuItems((prev) => prev.filter((it) => it.item_id !== item_id));
-  };
 
   const handleAddToCart = (item) => {
     if (!user) {
@@ -81,12 +124,23 @@ function Menu({ user, onAddToCart }) {
       showToast('Admins cannot place orders', 'error');
       return;
     }
+    
     onAddToCart(item);
     showToast(`${item.item_name} added to cart!`, 'success');
+    
     try {
       const socket = getSocket();
-      socket.emit('cart:add', { item: { item_id: item.item_id, item_name: item.item_name, price: item.price } });
-    } catch (_e) {}
+      socket.emit('cart:add', {
+        item: {
+          item_id: item.item_id,
+          item_name: item.item_name,
+          price: item.price,
+          quantity: 1
+        }
+      });
+    } catch (_e) {
+      console.warn('Failed to emit cart:add event');
+    }
   };
 
   if (loading) {
@@ -145,18 +199,24 @@ function Menu({ user, onAddToCart }) {
                   <div className="placeholder-image">🍽️</div>
                 )}
               </div>
-              
+
               <div className="menu-card-content">
                 <h3>{item.item_name}</h3>
                 <p className="item-description">{item.description}</p>
                 <div className="menu-card-footer">
-                  <span className="item-price">₹{item.price}</span>
+                  <span className="item-price">Rs {item.price}</span>
                   <button
                     className="add-to-cart-btn"
                     onClick={() => handleAddToCart(item)}
-                    disabled={!item.is_available || (user && user.role !== 'customer')}
+                    disabled={
+                      !item.is_available || (user && user.role !== 'customer')
+                    }
                   >
-                    {(!item.is_available) ? 'Unavailable' : (user && user.role !== 'customer') ? 'Admin Only' : 'Add to Cart'}
+                    {!item.is_available
+                      ? 'Unavailable'
+                      : user && user.role !== 'customer'
+                      ? 'Customers Only'
+                      : 'Add to Cart'}
                   </button>
                 </div>
               </div>

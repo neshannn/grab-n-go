@@ -116,17 +116,6 @@ function Register() {
           )}
 
           <form onSubmit={handleSubmit} className="space-y-5">
-            <div className="flex items-center">
-              <input
-                type="checkbox"
-                checked={selectedRole === 'admin'}
-                onChange={(e) => setSelectedRole(e.target.checked ? 'admin' : 'customer')}
-                className="mr-2"
-              />
-              <label className="block text-sm font-medium text-gray-700">
-                Click here to register as Admin
-              </label>
-            </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">Full Name</label>
               <input
@@ -202,6 +191,17 @@ function Register() {
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
                 placeholder="••••••••"
               />
+            </div>
+            <div className="flex items-center">
+              <input
+                type="checkbox"
+                checked={selectedRole === 'admin'}
+                onChange={(e) => setSelectedRole(e.target.checked ? 'admin' : 'customer')}
+                className="mr-2"
+              />
+              <label className="block text-sm font-medium text-gray-700">
+                Click here to register as Admin
+              </label>
             </div>
 
             <button

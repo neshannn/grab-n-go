@@ -1,130 +1,121 @@
 import React, { useState, useEffect } from 'react';
-import { menuAPI, categoryAPI, orderAPI, adminAPI } from '../services/api';
+import { menuAPI, categoryAPI, adminAPI } from '../services/api';
 import { getSocket } from '../services/realtime';
+
 
 function AdminDashboard() {
   const [activeTab, setActiveTab] = useState('overview');
   const [menuItems, setMenuItems] = useState([]);
   const [categories, setCategories] = useState([]);
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [editingItem, setEditingItem] = useState(null);
-  const [formData, setFormData] = useState({
-    item_name: '',
-    category_id: '',
-    description: '',
-    price: '',
-    image_url: '',
-    is_available: true
-  });
-  const [formError, setFormError] = useState('');
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(false);
+ 
 
+
+  // Fetch all data based on active tab
   useEffect(() => {
-    if (activeTab === 'menu') {
-      fetchMenuItems();
-      fetchCategories();
-    }
+    const loadData = async () => {
+      setLoading(true);
+      try {
+        if (activeTab === 'menu' || activeTab === 'overview') {
+          const [menuRes, catRes] = await Promise.all([
+            menuAPI.getAllItems(),
+            categoryAPI.getAllCategories()
+          ]);
+          setMenuItems(Array.isArray(menuRes.data) ? menuRes.data : []);
+          setCategories(Array.isArray(catRes.data) ? catRes.data : []);
+        }
+        if (activeTab === 'orders' || activeTab === 'overview') {
+          const ordersRes = await adminAPI.getAllOrders(1);
+          const ordersList = ordersRes.data?.orders || [];
+          setOrders(Array.isArray(ordersList) ? ordersList : []);
+        }
+      } catch (err) {
+        console.error('Failed to load data:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadData();
   }, [activeTab]);
 
-  const fetchMenuItems = async () => {
+  // Real-time socket updates
+  useEffect(() => {
+    let socket;
     try {
-      const response = await menuAPI.getAllItems();
-      setMenuItems(response.data);
-    } catch (error) {
-      console.error('Failed to fetch menu items', error);
-    }
-  };
+      socket = getSocket();
 
-  const fetchCategories = async () => {
-    try {
-      const response = await categoryAPI.getAllCategories();
-      setCategories(response.data);
-    } catch (error) {
-      console.error('Failed to fetch categories', error);
-    }
-  };
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setFormError('');
-    try {
-      const payload = {
-        item_name: formData.item_name,
-        category_id: formData.category_id ? Number(formData.category_id) : null,
-        description: formData.description,
-        price: Number(String(formData.price).replace(',', '.')),
-        image_url: formData.image_url || undefined,
-        is_available: !!formData.is_available,
-      };
-      if (!payload.item_name || Number.isNaN(payload.price)) {
-        setFormError('Please enter a valid name and numeric price.');
-        return;
-      }
-      if (editingItem) {
-        await menuAPI.updateItem(editingItem.item_id, payload);
-        alert('Menu item updated successfully!');
-      } else {
-        console.log('Adding menu item:', payload);
-        const response = await menuAPI.addItem(payload);
-        console.log('Item added response:', response);
-        try {
-          const socket = getSocket();
-          socket.emit('menu:item:add', payload);
-        } catch (socketErr) {
-          console.error('WebSocket emit error:', socketErr);
-        }
-        alert('Menu item added successfully!');
-      }
-      setShowAddForm(false);
-      setEditingItem(null);
-      setFormData({
-        item_name: '',
-        category_id: '',
-        description: '',
-        price: '',
-        image_url: '',
-        is_available: true
+      // Menu updates
+      socket.on('menu:item:add', (newItem) => {
+        console.log('Menu item added:', newItem);
+        setMenuItems((prev) => {
+          const exists = prev.some((item) => item.item_id === newItem.item_id);
+          return exists ? prev : [...prev, newItem];
+        });
       });
-      // Fetch updated menu items
-      await fetchMenuItems();
-    } catch (error) {
-      console.error('Error submitting form:', error);
-      const msg = error.response?.data?.error || error.message || 'Failed to save menu item';
-      setFormError(msg);
-      alert(`Error: ${msg}`);
+
+      socket.on('menu:item:update', (updated) => {
+        console.log('Menu item updated:', updated);
+        setMenuItems((prev) =>
+          prev.map((item) => (item.item_id === updated.item_id ? updated : item))
+        );
+      });
+
+      socket.on('menu:item:delete', ({ item_id }) => {
+        console.log('Menu item deleted:', item_id);
+        setMenuItems((prev) => prev.filter((item) => item.item_id !== item_id));
+      });
+
+      // Order updates
+      socket.on('order:new', (newOrder) => {
+        console.log('New order:', newOrder);
+        setOrders((prev) => [newOrder, ...prev]);
+      });
+
+      socket.on('order:update', (updated) => {
+        console.log('Order updated:', updated);
+        setOrders((prev) =>
+          prev.map((order) => (order.order_id === updated.order_id ? updated : order))
+        );
+      });
+
+      // Category updates
+      socket.on('category:add', (newCat) => {
+        console.log('Category added:', newCat);
+        setCategories((prev) => [...prev, newCat]);
+      });
+
+      socket.on('category:update', (updated) => {
+        console.log('Category updated:', updated);
+        setCategories((prev) =>
+          prev.map((cat) => (cat.category_id === updated.category_id ? updated : cat))
+        );
+      });
+    } catch (err) {
+      console.warn('Socket connection failed:', err);
     }
-  };
 
-  const handleEdit = (item) => {
-    setEditingItem(item);
-    setFormData({
-      item_name: item.item_name,
-      category_id: item.category_id,
-      description: item.description,
-      price: item.price,
-      image_url: item.image_url || '',
-      is_available: item.is_available
-    });
-    setShowAddForm(true);
-  };
-
-  const handleDelete = async (itemId) => {
-    if (window.confirm('Are you sure you want to delete this item?')) {
+    return () => {
       try {
-        await menuAPI.deleteItem(itemId);
-        alert('Item deleted successfully');
-        fetchMenuItems();
-      } catch (error) {
-        alert('Failed to delete item');
-      }
-    }
-  };
+        if (socket) {
+          socket.off('menu:item:add');
+          socket.off('menu:item:update');
+          socket.off('menu:item:delete');
+          socket.off('order:new');
+          socket.off('order:update');
+          socket.off('category:add');
+          socket.off('category:update');
+        }
+      } catch (_e) {}
+    };
+  }, []);
 
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
       <div className="bg-white shadow-sm border-b">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-3 py-4 md:py-6">
             <h1 className="text-3xl font-bold text-gray-900">Admin Dashboard</h1>
             <div className="flex items-center space-x-4">
@@ -135,23 +126,22 @@ function AdminDashboard() {
       </div>
 
       {/* Tabs */}
-      <div className="bg-white shadow-sm">
-        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 overflow-x-auto">
+      <div className="bg-white shadow-sm border-b sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 overflow-x-auto">
           <div className="flex space-x-8 border-b">
             {[
               { id: 'overview', name: 'Overview', icon: '📊' },
-              { id: 'menu', name: 'Menu Management', icon: '🍔' },
+              { id: 'menu', name: 'Menu', icon: '🍔' },
               { id: 'categories', name: 'Categories', icon: '🏷️' },
-              { id: 'orders', name: 'Orders', icon: '📦' },
-              { id: 'analytics', name: 'Analytics', icon: '📈' }
+              { id: 'orders', name: 'Orders', icon: '📦' }
             ].map((tab) => (
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors ${
+                className={`py-4 px-2 border-b-2 font-medium text-sm transition-colors whitespace-nowrap ${
                   activeTab === tab.id
-                    ? 'border-primary-500 text-primary-600'
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
                 }`}
               >
                 <span className="mr-2">{tab.icon}</span>
@@ -164,56 +154,40 @@ function AdminDashboard() {
 
       {/* Content */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {activeTab === 'overview' && <OverviewTab />}
-        {activeTab === 'menu' && (
-          <MenuManagementTab
-            menuItems={menuItems}
-            categories={categories}
-            showAddForm={showAddForm}
-            setShowAddForm={setShowAddForm}
-            formData={formData}
-            setFormData={setFormData}
-            handleSubmit={handleSubmit}
-            handleEdit={handleEdit}
-            handleDelete={handleDelete}
-            editingItem={editingItem}
-            setEditingItem={setEditingItem}
-          />
+        {loading && activeTab !== 'overview' && (
+          <div className="text-center py-12 text-gray-500">Loading...</div>
         )}
-        {activeTab === 'orders' && <OrdersTab />}
-        {activeTab === 'categories' && (
-          <CategoriesTab
-            categories={categories}
-            refresh={fetchCategories}
-            newCategoryName={newCategoryName}
-            setNewCategoryName={setNewCategoryName}
-          />
-        )}
-        {activeTab === 'analytics' && <AnalyticsTab />}
+        {!loading && activeTab === 'overview' && <OverviewTab menuItems={menuItems} orders={orders} />}
+        {!loading && activeTab === 'menu' && <MenuTab menuItems={menuItems} categories={categories} />}
+        {!loading && activeTab === 'categories' && <CategoriesTab categories={categories} />}
+        {!loading && activeTab === 'orders' && <OrdersTab orders={orders} />}
       </div>
     </div>
   );
 }
 
-// Overview Tab Component
-function OverviewTab() {
+// Overview Tab
+function OverviewTab({ menuItems, orders }) {
+  const totalOrders = orders.length;
+  const totalRevenue = orders.reduce((sum, o) => sum + (parseFloat(o.total_amount) || 0), 0);
+  const pendingOrders = orders.filter((o) => o.status === 'pending').length;
+
   const stats = [
-    { name: "Today's Orders", value: '24', change: '+12%', icon: '🛒', color: 'bg-blue-500' },
-    { name: 'Revenue', value: '₹4,850', change: '+8%', icon: '💰', color: 'bg-green-500' },
-    { name: 'Pending Orders', value: '5', change: 'Active', icon: '⏳', color: 'bg-yellow-500' },
-    { name: 'Total Menu Items', value: '42', change: '+3 new', icon: '🍽️', color: 'bg-purple-500' },
+    { name: 'Total Orders', value: totalOrders, icon: '🛒', color: 'bg-blue-500' },
+    { name: 'Total Revenue', value: `₹${totalRevenue.toFixed(2)}`, icon: '💰', color: 'bg-green-500' },
+    { name: 'Pending Orders', value: pendingOrders, icon: '⏳', color: 'bg-yellow-500' },
+    { name: 'Menu Items', value: menuItems.length, icon: '🍽️', color: 'bg-purple-500' }
   ];
 
   return (
     <div>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         {stats.map((stat) => (
-          <div key={stat.name} className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+          <div key={stat.name} className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-gray-600">{stat.name}</p>
                 <p className="text-3xl font-bold text-gray-900 mt-2">{stat.value}</p>
-                <p className="text-sm text-green-600 mt-2">{stat.change}</p>
               </div>
               <div className={`${stat.color} w-12 h-12 rounded-lg flex items-center justify-center text-2xl`}>
                 {stat.icon}
@@ -223,92 +197,179 @@ function OverviewTab() {
         ))}
       </div>
 
-      {/* Recent Activity */}
-      <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Recent Activity</h2>
-        <div className="space-y-4">
-          {[
-            { action: 'New order received', time: '2 minutes ago', icon: '🛒', color: 'bg-blue-100 text-blue-600' },
-            { action: 'Order completed', time: '15 minutes ago', icon: '✅', color: 'bg-green-100 text-green-600' },
-            { action: 'New menu item added', time: '1 hour ago', icon: '➕', color: 'bg-purple-100 text-purple-600' },
-          ].map((activity, index) => (
-            <div key={index} className="flex items-center space-x-4 p-3 hover:bg-gray-50 rounded-lg transition-colors">
-              <div className={`w-10 h-10 rounded-full flex items-center justify-center ${activity.color}`}>
-                {activity.icon}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Orders */}
+        <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
+          <h2 className="text-xl font-bold text-gray-900 mb-4">Recent Orders</h2>
+          <div className="space-y-3">
+            {orders.slice(0, 5).map((order) => (
+              <div key={order.order_id} className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg">
+                <div>
+                  <p className="font-medium text-gray-900">{order.order_number}</p>
+                  <p className="text-sm text-gray-500">{new Date(order.created_at).toLocaleString()}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-semibold text-gray-900">₹{parseFloat(order.total_amount).toFixed(2)}</p>
+                  <p className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700">
+                    {order.status.toUpperCase()}
+                  </p>
+                </div>
               </div>
-              <div className="flex-1">
-                <p className="text-sm font-medium text-gray-900">{activity.action}</p>
-                <p className="text-xs text-gray-500">{activity.time}</p>
+            ))}
+          </div>
+        </div>
+
+        {/* Menu Stats */}
+        <div className="bg-white rounded-lg shadow-sm p-6 border border-gray-100">
+          <h2 className="text-xl font-bold text-gray-900 mb-4">Menu Stats</h2>
+          <div className="space-y-3">
+            {menuItems.slice(0, 5).map((item) => (
+              <div key={item.item_id} className="flex items-center justify-between p-3 hover:bg-gray-50 rounded-lg">
+                <div>
+                  <p className="font-medium text-gray-900">{item.item_name}</p>
+                  <p className="text-sm text-gray-500">{item.category_name}</p>
+                </div>
+                <div className="text-right">
+                  <p className="font-semibold text-gray-900">₹{parseFloat(item.price).toFixed(2)}</p>
+                  <p className={`text-xs px-2 py-1 rounded ${item.is_available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {item.is_available ? 'Available' : 'Unavailable'}
+                  </p>
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
+// Menu Tab
+function MenuTab({ menuItems, categories }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [formData, setFormData] = useState({
+    item_name: '',
+    category_id: '',
+    description: '',
+    price: '',
+    image_url: '',
+    is_available: true
+  });
+  const [error, setError] = useState('');
 
-// Menu Management Tab Component
-function MenuManagementTab({ menuItems, categories, showAddForm, setShowAddForm, formData, setFormData, handleSubmit, handleEdit, handleDelete, editingItem, setEditingItem }) {
+  const resetForm = () => {
+    setFormData({ item_name: '', category_id: '', description: '', price: '', image_url: '', is_available: true });
+    setEditing(null);
+    setError('');
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    try {
+      const payload = {
+        item_name: formData.item_name.trim(),
+        category_id: formData.category_id ? Number(formData.category_id) : null,
+        description: formData.description.trim(),
+        price: Number(formData.price),
+        image_url: formData.image_url.trim() || null,
+        is_available: formData.is_available
+      };
+
+      if (!payload.item_name || isNaN(payload.price)) {
+        setError('Please fill in all required fields');
+        return;
+      }
+
+      if (editing) {
+        await menuAPI.updateItem(editing.item_id, payload);
+        alert('Item updated successfully!');
+      } else {
+        await menuAPI.addItem(payload);
+        alert('Item added successfully!');
+      }
+
+      resetForm();
+      setShowForm(false);
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Operation failed';
+      setError(msg);
+      alert(`Error: ${msg}`);
+    }
+  };
+
+  const handleEdit = (item) => {
+    setEditing(item);
+    setFormData({
+      item_name: item.item_name,
+      category_id: item.category_id || '',
+      description: item.description || '',
+      price: item.price,
+      image_url: item.image_url || '',
+      is_available: item.is_available
+    });
+    setShowForm(true);
+  };
+
+  const handleDelete = async (itemId) => {
+    if (window.confirm('Delete this item?')) {
+      try {
+        await menuAPI.deleteItem(itemId);
+        alert('Item deleted successfully!');
+      } catch (err) {
+        alert('Failed to delete item');
+      }
+    }
+  };
+
   return (
     <div>
       <div className="flex justify-between items-center mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Menu Items</h2>
+        <h2 className="text-2xl font-bold text-gray-900">Menu Items ({menuItems.length})</h2>
         <button
           onClick={() => {
-            setShowAddForm(!showAddForm);
-            setEditingItem(null);
-            setFormData({
-              item_name: '',
-              category_id: '',
-              description: '',
-              price: '',
-              image_url: '',
-              is_available: true
-            });
+            if (showForm) resetForm();
+            setShowForm(!showForm);
           }}
-          className="bg-primary-500 text-white px-6 py-3 rounded-lg font-medium hover:bg-primary-600 transition-colors flex items-center"
+          className="bg-blue-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-600 transition-colors"
         >
-          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-          </svg>
-          {showAddForm ? 'Cancel' : 'Add New Item'}
+          {showForm ? '✕ Cancel' : '+ Add Item'}
         </button>
       </div>
 
-      {/* Add/Edit Form */}
-      {showAddForm && (
-        <div className="bg-white rounded-xl shadow-sm p-6 mb-6 border border-gray-100">
+      {showForm && (
+        <div className="bg-white rounded-lg shadow-sm p-6 mb-6 border border-gray-100">
           <h3 className="text-lg font-semibold text-gray-900 mb-4">
-            {editingItem ? 'Edit Menu Item' : 'Add New Menu Item'}
+            {editing ? 'Edit Item' : 'Add New Item'}
           </h3>
-          {formError && (
-            <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg">{formError}</div>
-          )}
+          {error && <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-2 rounded-lg">{error}</div>}
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Item Name</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Item Name *</label>
                 <input
                   type="text"
                   value={formData.item_name}
                   onChange={(e) => setFormData({ ...formData, item_name: e.target.value })}
                   required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="e.g., Cheese Burger"
                 />
               </div>
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Category</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Category *</label>
                 <select
                   value={formData.category_id}
                   onChange={(e) => setFormData({ ...formData, category_id: e.target.value })}
                   required
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
                 >
                   <option value="">Select Category</option>
                   {categories.map((cat) => (
-                    <option key={cat.category_id} value={cat.category_id}>{cat.category_name}</option>
+                    <option key={cat.category_id} value={cat.category_id}>
+                      {cat.category_name}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -319,19 +380,21 @@ function MenuManagementTab({ menuItems, categories, showAddForm, setShowAddForm,
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 rows="3"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                placeholder="Item description..."
               />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Price (₹)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Price (₹) *</label>
                 <input
                   type="number"
+                  step="0.01"
                   value={formData.price}
                   onChange={(e) => setFormData({ ...formData, price: e.target.value })}
                   required
-                  step="0.01"
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="0.00"
                 />
               </div>
               <div>
@@ -340,7 +403,8 @@ function MenuManagementTab({ menuItems, categories, showAddForm, setShowAddForm,
                   type="url"
                   value={formData.image_url}
                   onChange={(e) => setFormData({ ...formData, image_url: e.target.value })}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500"
+                  placeholder="https://..."
                 />
               </div>
             </div>
@@ -350,7 +414,7 @@ function MenuManagementTab({ menuItems, categories, showAddForm, setShowAddForm,
                 id="is_available"
                 checked={formData.is_available}
                 onChange={(e) => setFormData({ ...formData, is_available: e.target.checked })}
-                className="w-4 h-4 text-primary-600 focus:ring-primary-500 border-gray-300 rounded"
+                className="w-4 h-4 text-blue-600 border-gray-300 rounded"
               />
               <label htmlFor="is_available" className="ml-2 text-sm font-medium text-gray-700">
                 Available for order
@@ -358,160 +422,213 @@ function MenuManagementTab({ menuItems, categories, showAddForm, setShowAddForm,
             </div>
             <button
               type="submit"
-              className="bg-primary-500 text-white px-6 py-3 rounded-lg font-medium hover:bg-primary-600 transition-colors"
+              className="w-full bg-blue-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-blue-600 transition-colors"
             >
-              {editingItem ? 'Update Item' : 'Add Item'}
+              {editing ? 'Update Item' : 'Add Item'}
             </button>
           </form>
         </div>
       )}
 
-      {/* Menu Items Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {menuItems.map((item) => (
-          <div key={item.item_id} className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow">
-            <div className="h-48 bg-gradient-to-br from-primary-100 to-purple-100 flex items-center justify-center">
-              {item.image_url ? (
-                <img src={item.image_url} alt={item.item_name} className="w-full h-full object-cover" />
-              ) : (
-                <span className="text-6xl">🍽️</span>
-              )}
-            </div>
-            <div className="p-4">
-              <div className="flex justify-between items-start mb-2">
-                <h3 className="font-semibold text-gray-900">{item.item_name}</h3>
-                <span className={`px-2 py-1 rounded-full text-xs font-medium ${item.is_available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                  {item.is_available ? 'Available' : 'Unavailable'}
-                </span>
+        {menuItems.length === 0 ? (
+          <div className="col-span-full text-center py-12 text-gray-500">No menu items yet</div>
+        ) : (
+          menuItems.map((item) => (
+            <div key={item.item_id} className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden hover:shadow-md transition-shadow">
+              <div className="h-40 bg-gradient-to-br from-blue-100 to-purple-100 flex items-center justify-center">
+                {item.image_url ? (
+                  <img src={item.image_url} alt={item.item_name} className="w-full h-full object-cover" />
+                ) : (
+                  <span className="text-5xl">🍽️</span>
+                )}
               </div>
-              <p className="text-sm text-gray-600 mb-3">{item.description}</p>
-              <div className="flex justify-between items-center">
-                <span className="text-lg font-bold text-primary-600">₹{item.price}</span>
-                <div className="flex space-x-2">
-                  <button
-                    onClick={() => handleEdit(item)}
-                    className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => handleDelete(item.item_id)}
-                    className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                    </svg>
-                  </button>
+              <div className="p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <h3 className="font-semibold text-gray-900">{item.item_name}</h3>
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${item.is_available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                    {item.is_available ? 'Available' : 'Unavailable'}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-600 mb-2">{item.category_name}</p>
+                <p className="text-sm text-gray-600 mb-3">{item.description}</p>
+                <div className="flex justify-between items-center">
+                  <span className="text-lg font-bold text-blue-600">₹{parseFloat(item.price).toFixed(2)}</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => handleEdit(item)}
+                      className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                      title="Edit"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={() => handleDelete(item.item_id)}
+                      className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                      title="Delete"
+                    >
+                      🗑️
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   );
 }
 
-// Orders Tab Component
-function OrdersTab() {
-  const [orders, setOrders] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [updatingId, setUpdatingId] = useState(null);
+// Categories Tab
+function CategoriesTab({ categories }) {
+  const [newCatName, setNewCatName] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const fetchOrders = async () => {
-    setError('');
-    setLoading(true);
+  const handleAddCategory = async (e) => {
+    e.preventDefault();
+    if (!newCatName.trim()) return;
+    setSaving(true);
     try {
-      const res = await adminAPI.getAllOrders();
-      setOrders(res.data || []);
-    } catch (e) {
-      setError(e.response?.data?.error || 'Failed to load orders');
+      await categoryAPI.addCategory({ category_name: newCatName });
+      setNewCatName('');
+      alert('Category added successfully!');
+    } catch (err) {
+      alert('Failed to add category: ' + (err.response?.data?.error || err.message));
     } finally {
-      setLoading(false);
+      setSaving(false);
     }
   };
 
-  useEffect(() => {
-    fetchOrders();
-    // Subscribe to realtime new-order events and refresh
-    let socket;
+  const handleToggleActive = async (cat) => {
     try {
-      socket = getSocket();
-      socket.on('order:new', handleOrderNew);
-    } catch (_e) {}
-    return () => {
-      try {
-        socket && socket.off('order:new', handleOrderNew);
-      } catch (_e) {}
-    };
-  }, []);
-
-  const handleOrderNew = () => {
-    // Light debounce to avoid rapid refetches if multiple events fire
-    fetchOrders();
+      await categoryAPI.updateCategory(cat.category_id, {
+        category_name: cat.category_name,
+        is_active: !cat.is_active
+      });
+      alert(`Category ${!cat.is_active ? 'activated' : 'deactivated'}!`);
+    } catch (err) {
+      console.error('Error:', err.response?.data);
+      alert('Failed to update category: ' + (err.response?.data?.error || err.message));
+    }
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
+    <div>
       <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Recent Orders</h2>
-        <button onClick={fetchOrders} className="px-4 py-2 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 text-sm font-medium">
-          Refresh
-        </button>
+        <h2 className="text-2xl font-bold text-gray-900">Categories ({categories.length})</h2>
+        <form onSubmit={handleAddCategory} className="flex items-center gap-2">
+          <input
+            type="text"
+            value={newCatName}
+            onChange={(e) => setNewCatName(e.target.value)}
+            placeholder="New category name"
+            className="px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          />
+          <button
+            type="submit"
+            disabled={saving || !newCatName.trim()}
+            className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 disabled:opacity-50 transition-colors"
+          >
+            {saving ? 'Adding...' : 'Add'}
+          </button>
+        </form>
       </div>
-      {loading && (
-        <div className="text-gray-500 py-8 text-center">Loading orders…</div>
-      )}
-      {error && (
-        <div className="mb-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">{error}</div>
-      )}
-      {!loading && !error && orders.length === 0 && (
-        <div className="text-gray-500 text-center py-12">No orders yet.</div>
-      )}
-      {!loading && !error && orders.length > 0 && (
-        <div className="overflow-x-auto">
+
+      <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-hidden">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">ID</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-200">
+            {categories.map((cat) => (
+              <tr key={cat.category_id} className="hover:bg-gray-50">
+                <td className="px-6 py-3 text-gray-900">{cat.category_id}</td>
+                <td className="px-6 py-3 text-gray-900 font-medium">{cat.category_name}</td>
+                <td className="px-6 py-3">
+                  <span className={`px-2 py-1 rounded text-xs font-medium ${cat.is_active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-700'}`}>
+                    {cat.is_active ? 'Active' : 'Inactive'}
+                  </span>
+                </td>
+                <td className="px-6 py-3">
+                  <button
+                    onClick={() => handleToggleActive(cat)}
+                    className="text-sm px-3 py-1 rounded bg-gray-100 hover:bg-gray-200 transition-colors"
+                  >
+                    {cat.is_active ? 'Deactivate' : 'Activate'}
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// Orders Tab
+function OrdersTab({ orders }) {
+  const [updatingId, setUpdatingId] = useState(null);
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6">All Orders ({orders.length})</h2>
+
+      {orders.length === 0 ? (
+        <div className="bg-white rounded-lg shadow-sm p-12 text-center text-gray-500 border border-gray-100">
+          No orders yet
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-x-auto">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Order #</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Customer</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Items</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Payment</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Placed At</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order #</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
               </tr>
             </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {orders.map((o) => (
-                <tr key={o.order_id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 font-medium text-gray-900">{o.order_number}</td>
-                  <td className="px-4 py-3 text-gray-700">{o.full_name || o.username || `User #${o.user_id}`}</td>
-                  <td className="px-4 py-3 text-gray-700">{o.item_count}</td>
-                  <td className="px-4 py-3 text-gray-900 font-semibold">₹{Number(o.total_amount).toFixed(2)}</td>
-                  <td className="px-4 py-3 text-gray-700">
-                    <span className="inline-flex items-center px-2 py-1 rounded text-xs bg-gray-100 text-gray-700">
-                      {(o.payment_status || 'pending').toUpperCase()}
+            <tbody className="divide-y divide-gray-200">
+              {orders.map((order) => (
+                <tr key={order.order_id} className="hover:bg-gray-50">
+                  <td className="px-6 py-3 font-medium text-gray-900">{order.order_number}</td>
+                  <td className="px-6 py-3 text-gray-700">{order.full_name || order.username || `User #${order.user_id}`}</td>
+                  <td className="px-6 py-3 text-gray-700">{order.item_count}</td>
+                  <td className="px-6 py-3 text-gray-900 font-semibold">₹{parseFloat(order.total_amount).toFixed(2)}</td>
+                  <td className="px-6 py-3">
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      order.payment_status === 'paid' ? 'bg-green-100 text-green-700' :
+                      order.payment_status === 'refunded' ? 'bg-red-100 text-red-700' :
+                      'bg-yellow-100 text-yellow-700'
+                    }`}>
+                      {(order.payment_status || 'pending').toUpperCase()}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-700">
-                    <span className="inline-flex items-center px-2 py-1 rounded text-xs bg-blue-100 text-blue-700">
-                      {(o.status || 'pending').toUpperCase()}
+                  <td className="px-6 py-3">
+                    <span className={`px-2 py-1 rounded text-xs font-medium ${
+                      order.status === 'completed' ? 'bg-green-100 text-green-700' :
+                      order.status === 'cancelled' ? 'bg-red-100 text-red-700' :
+                      order.status === 'ready' ? 'bg-blue-100 text-blue-700' :
+                      'bg-gray-100 text-gray-700'
+                    }`}>
+                      {(order.status || 'pending').toUpperCase()}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-gray-700">
-                    <OrderActions
-                      order={o}
-                      onUpdated={() => fetchOrders()}
-                      busy={updatingId === o.order_id}
-                      setBusy={(flag) => setUpdatingId(flag ? o.order_id : null)}
-                    />
+                  <td className="px-6 py-3">
+                    <OrderActions order={order} busy={updatingId === order.order_id} setBusy={(flag) => setUpdatingId(flag ? order.order_id : null)} />
                   </td>
-                  <td className="px-4 py-3 text-gray-500 text-sm">{new Date(o.created_at).toLocaleString()}</td>
+                  <td className="px-6 py-3 text-gray-500 text-sm">{new Date(order.created_at).toLocaleString()}</td>
                 </tr>
               ))}
             </tbody>
@@ -522,7 +639,8 @@ function OrdersTab() {
   );
 }
 
-function OrderActions({ order, onUpdated, busy, setBusy }) {
+// Order Actions Component
+function OrderActions({ order, busy, setBusy }) {
   const [status, setStatus] = useState(order.status || 'pending');
   const [payment, setPayment] = useState(order.payment_status || 'pending');
 
@@ -530,113 +648,47 @@ function OrderActions({ order, onUpdated, busy, setBusy }) {
     setBusy(true);
     try {
       await adminAPI.updateOrderStatus(order.order_id, { status, payment_status: payment });
-      onUpdated();
-    } catch (_e) {
-      // noop; could add toast
+      alert('Order updated successfully!');
+    } catch (err) {
+      alert('Failed to update order: ' + (err.response?.data?.error || err.message));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="flex items-center space-x-2">
-      <select value={status} onChange={(e) => setStatus(e.target.value)} className="text-sm border rounded px-2 py-1">
-        {['pending','confirmed','preparing','ready','completed','cancelled'].map(s => (
-          <option key={s} value={s}>{s}</option>
+    <div className="flex items-center gap-2">
+      <select
+        value={status}
+        onChange={(e) => setStatus(e.target.value)}
+        className="text-xs border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500"
+      >
+        {['pending', 'confirmed', 'preparing', 'ready', 'completed', 'cancelled'].map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
         ))}
       </select>
-      <select value={payment} onChange={(e) => setPayment(e.target.value)} className="text-sm border rounded px-2 py-1">
-        {['pending','paid','refunded'].map(p => (
-          <option key={p} value={p}>{p}</option>
+      <select
+        value={payment}
+        onChange={(e) => setPayment(e.target.value)}
+        className="text-xs border border-gray-300 rounded px-2 py-1 focus:ring-2 focus:ring-blue-500"
+      >
+        {['pending', 'paid', 'refunded'].map((p) => (
+          <option key={p} value={p}>
+            {p}
+          </option>
         ))}
       </select>
-      <button onClick={handleUpdate} disabled={busy} className="text-sm px-3 py-1 rounded bg-primary-500 text-white disabled:opacity-50">
-        {busy ? 'Updating…' : 'Update'}
+      <button
+        onClick={handleUpdate}
+        disabled={busy}
+        className="text-xs px-2 py-1 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
+      >
+        {busy ? 'Updating...' : 'Save'}
       </button>
     </div>
   );
 }
 
-// Analytics Tab Component
-function AnalyticsTab() {
-  return (
-    <div className="bg-white rounded-xl shadow-sm p-6 border border-gray-100">
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">Analytics & Reports</h2>
-      <div className="text-gray-500 text-center py-12">
-        <svg className="w-16 h-16 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-        </svg>
-        <p>Analytics dashboard coming soon...</p>
-      </div>
-    </div>
-  );
-}
-
 export default AdminDashboard;
-
-function CategoriesTab({ categories, refresh, newCategoryName, setNewCategoryName }) {
-  const [saving, setSaving] = useState(false);
-
-  const addCategory = async (e) => {
-    e.preventDefault();
-    if (!newCategoryName.trim()) return;
-    setSaving(true);
-    try {
-      await fetch('/api/categories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ category_name: newCategoryName })
-      });
-      setNewCategoryName('');
-      refresh();
-    } catch (_e) {} finally { setSaving(false); }
-  };
-
-  const toggleActive = async (cat) => {
-    try {
-      await fetch(`/api/categories/${cat.category_id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('token')}` },
-        body: JSON.stringify({ is_active: !cat.is_active })
-      });
-      refresh();
-    } catch (_e) {}
-  };
-
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold text-gray-900">Categories</h2>
-        <form onSubmit={addCategory} className="flex items-center space-x-2">
-          <input value={newCategoryName} onChange={(e) => setNewCategoryName(e.target.value)} placeholder="New category name" className="border rounded px-3 py-2 text-sm" />
-          <button type="submit" disabled={saving || !newCategoryName.trim()} className="px-3 py-2 text-sm rounded bg-primary-500 text-white disabled:opacity-50">{saving ? 'Adding…' : 'Add'}</button>
-        </form>
-      </div>
-
-      <div className="overflow-x-auto">
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Name</th>
-              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Active</th>
-              <th className="px-4 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {categories.map((c) => (
-              <tr key={c.category_id}>
-                <td className="px-4 py-3 text-gray-700">{c.category_id}</td>
-                <td className="px-4 py-3 text-gray-900 font-medium">{c.category_name}</td>
-                <td className="px-4 py-3">{c.is_active ? 'Yes' : 'No'}</td>
-                <td className="px-4 py-3">
-                  <button onClick={() => toggleActive(c)} className="text-sm px-3 py-1 rounded bg-gray-100 hover:bg-gray-200">{c.is_active ? 'Deactivate' : 'Activate'}</button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
