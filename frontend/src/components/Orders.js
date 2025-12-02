@@ -93,6 +93,24 @@ function Orders() {
     });
   };
 
+  // --- NEW: Function to display scheduled time ---
+  const getScheduleTimeDisplay = (type, scheduledAt) => {
+    if (type === 'scheduled' && scheduledAt) {
+      const date = new Date(scheduledAt);
+      const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+      const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+      // Check if scheduled for today
+      const today = new Date();
+      if (date.toDateString() === today.toDateString()) {
+        return `Scheduled for Today at ${time}`;
+      }
+      return `Scheduled for ${day} at ${time}`;
+    }
+    return 'ASAP';
+  };
+  // ------------------------------------------------
+
   if (loading) {
     return <div className="loading">Loading orders...</div>;
   }
@@ -118,12 +136,29 @@ function Orders() {
 
       <div className="orders-list">
         {orders.map((order) => (
-          <div key={order.order_id} className="order-card">
+          <div 
+            key={order.order_id} 
+            className={`order-card ${order.order_type === 'scheduled' ? 'order-card-scheduled' : ''}`} // New class for styling
+          >
             <div className="order-header">
               <div className="order-info">
                 <h3>Order #{order.order_number}</h3>
                 <p className="order-date">{formatDate(order.created_at)}</p>
               </div>
+              
+              {/* --- NEW: Order Type and Scheduled Time Display --- */}
+              <div className="order-timing-status">
+                <span className={`order-type order-type-${order.order_type}`}>
+                  {order.order_type?.toUpperCase() || 'ASAP'}
+                </span>
+                {order.order_type === 'scheduled' && (
+                  <p className="scheduled-time">
+                    {getScheduleTimeDisplay(order.order_type, order.scheduled_at)}
+                  </p>
+                )}
+              </div>
+              {/* -------------------------------------------------- */}
+
               <div
                 className="order-status"
                 style={{ backgroundColor: getStatusColor(order.status) }}
@@ -148,9 +183,9 @@ function Orders() {
                 </span>
               </div>
               {order.special_instructions && (
-                <div className="order-detail-row">
+                <div className="order-detail-row instructions">
                   <span>Special Instructions:</span>
-                  <span>{order.special_instructions}</span>
+                  <span className="instructions-text">{order.special_instructions}</span>
                 </div>
               )}
             </div>
@@ -158,7 +193,7 @@ function Orders() {
             <div className="order-footer">
               <div className="order-total">
                 <span>Total Amount:</span>
-                <span className="amount">₹{formatPrice(order.total_amount)}</span>
+                <span className="amount">Rs {formatPrice(order.total_amount)}</span>
               </div>
             </div>
           </div>

@@ -359,42 +359,94 @@ const requireRole = (...roles) => (req, res, next) => {
 // ==================== AUTH ROUTES ====================
 
 // Register User
-app.post('/api/auth/register', validateRegister, handleValidationErrors, async (req, res, next) => {
-  try {
-    const { username, email, password, full_name, phone } = req.body;
-    const role = 'customer';
-    
-    console.log('[REGISTER] Attempting registration for:', { username, email });
-    
-    const hashedPassword = await bcrypt.hash(password, 10);
-    console.log('[REGISTER] Password hashed successfully');
-    
-    const query = `
-      INSERT INTO users (username, email, password_hash, full_name, phone, role, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, NOW())
-    `;
-    
-    db.query(query, [username, email, hashedPassword, full_name, phone, role], (err, result) => {
-      if (err) {
-        console.error('[DB] Registration error:', err.message);
-        if (err.code === 'ER_DUP_ENTRY') {
-          return res.status(409).json({ error: 'Username or email already exists' });
-        }
-        return res.status(500).json({ error: 'Registration failed', details: err.message });
-      }
-      
-      console.log('[REGISTER] ✓ User registered:', username);
-      res.status(201).json({
-        message: 'User registered successfully',
-        userId: result.insertId
-      });
-    });
-  } catch (error) {
-    console.error('[REGISTER] Exception:', error.message);
-    next(error);
-  }
-});
 
+app.post(
+  '/api/auth/register',
+  [
+    body('username').trim().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
+    body('email').isEmail().withMessage('Invalid email address'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+    body('role').isIn(['customer', 'admin']).optional().withMessage('Invalid role specified'), 
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: errors.array()[0].msg });
+    }
+
+    const { username, email, password, full_name, phone } = req.body;
+    
+    // 1. Determine the final role, defaulting to 'customer'
+    const requestedRole = req.body.role;
+    const finalRole = requestedRole === 'admin' ? 'admin' : 'customer';
+    
+    // Function to handle the actual user registration
+    const executeRegistration = async (roleToInsert) => {
+      try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        // Use the correct column name 'password' in the INSERT query
+        const query = `
+          INSERT INTO users (username, email, password, full_name, phone, role, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `;
+        
+        // The third value is the hashedPassword, which goes into the 'password' column
+        db.query(query, [username, email, hashedPassword, full_name || null, phone || null, roleToInsert], (err, result) => {
+          if (err) {
+            console.error('[DB] Registration error:', err.message);
+            if (err.code === 'ER_DUP_ENTRY') {
+              return res.status(409).json({ error: 'Username or email already exists' });
+            }
+            return res.status(500).json({ error: 'Registration failed', details: err.message });
+          }
+          
+          const userId = result.insertId;
+          // Use the correct column name 'password' in the JWT token signing
+          const token = jwt.sign({ user_id: userId, role: roleToInsert }, process.env.JWT_SECRET, { expiresIn: '1d' }); 
+          
+          console.log('[REGISTER] ✓ User registered:', username, 'as', roleToInsert);
+          res.status(201).json({
+            message: 'User registered successfully',
+            token,
+            user: { user_id: userId, username, email, full_name, phone, role: roleToInsert }
+          });
+        });
+      } catch (error) {
+        // Handle bcrypt or other synchronous errors
+        console.error('[AUTH] Sync Error during registration:', error);
+        return res.status(500).json({ error: 'Internal server error during registration' });
+      }
+    };
+
+
+    // 2. Admin limit check (only runs if finalRole is 'admin')
+    if (finalRole === 'admin') {
+      const countQuery = 'SELECT COUNT(*) AS admin_count FROM users WHERE role = ?';
+      db.query(countQuery, ['admin'], (err, results) => {
+        if (err) {
+          console.error('[DB] Admin count check error:', err.message);
+          return res.status(500).json({ error: 'Database error during admin limit check' });
+        }
+        
+        const adminCount = results[0]?.admin_count || 0;
+        
+        if (adminCount >= 2) { 
+          console.warn(`[REGISTER] Admin limit reached. Count: ${adminCount}`);
+          return res.status(403).json({ 
+            error: 'Admin registration failed: Maximum of 2 admin accounts allowed.' 
+          });
+        }
+        
+        // Proceed with admin registration
+        executeRegistration(finalRole);
+      });
+    } else {
+      // Proceed with customer registration
+      executeRegistration(finalRole);
+    }
+  }
+);
 // Login User
 app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, async (req, res, next) => {
   try {
@@ -402,7 +454,8 @@ app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, 
     
     console.log('[LOGIN] Attempting login for:', username);
     
-    const query = 'SELECT * FROM users WHERE username = ? OR email = ?';
+    
+    const query = 'SELECT user_id, username, email, password, role, full_name FROM users WHERE username = ? OR email = ?'; 
     db.query(query, [username, username], async (err, results) => {
       if (err) {
         console.error('[DB] Login query error:', err.message);
@@ -418,7 +471,14 @@ app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, 
       console.log('[LOGIN] User found:', user.username, 'Role:', user.role);
       
       try {
-        const validPassword = await bcrypt.compare(password, user.password_hash);
+        // FIX 1: Add a check for the password column's existence
+        if (!user.password) {
+            console.warn('[LOGIN] Password hash missing for user:', username);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        // FIX 2: Correctly reference the new database column name 'user.password'
+        const validPassword = await bcrypt.compare(password, user.password); // <--- FIXED
         console.log('[LOGIN] Password comparison result:', validPassword);
         
         if (!validPassword) {
@@ -759,8 +819,32 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
       return res.status(401).json({ error: 'Authentication required' });
     }
     
-    const { items, payment_method, special_instructions } = req.body;
+    const { items, payment_method, special_instructions,order_type, scheduled_at} = req.body;
     const userId = req.user.userId;
+    
+    // --- NEW: Validation for Scheduling ---
+    let finalScheduledTime = null;
+    const finalOrderType = order_type === 'scheduled' ? 'scheduled' : 'asap';
+
+    if (finalOrderType === 'scheduled') {
+      if (!scheduled_at) {
+        return res.status(400).json({ error: 'Scheduled time is required for scheduled orders.' });
+      }
+      
+      const orderDate = new Date(scheduled_at);
+      const now = new Date();
+      
+      if (isNaN(orderDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid date format for scheduled time.' });
+      }
+
+      if (orderDate <= now) {
+         return res.status(400).json({ error: 'Scheduled time must be in the future.' });
+      }
+      
+      // Store as ISO string or MySQL datetime format
+      finalScheduledTime = new Date(scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
+    }
     
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: 'Order must contain at least one item' });
@@ -796,11 +880,11 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
         }
         
         const orderQuery = `
-          INSERT INTO orders (user_id, order_number, total_amount, payment_method, special_instructions, status, payment_status, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+          INSERT INTO orders (user_id, order_number, total_amount, payment_method, special_instructions, status, payment_status, order_type, scheduled_at, created_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
         `;
         
-        connection.query(orderQuery, [userId, orderNumber, total, payment_method, special_instructions || null, ORDER_STATUS.PENDING, PAYMENT_STATUS.PENDING], (err, orderResult) => {
+        connection.query(orderQuery, [userId, orderNumber, total, payment_method, special_instructions || null, ORDER_STATUS.PENDING, PAYMENT_STATUS.PENDING, finalOrderType, finalScheduledTime], (err, orderResult) => {
           if (err) {
             return connection.rollback(() => {
               connection.release();
@@ -840,6 +924,8 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
                   totalAmount: total,
                   userId,
                   username: req.user.username,
+                  orderType: finalOrderType, // Pass to socket
+                  scheduledAt: finalScheduledTime,
                   at: Date.now()
                 });
               } catch (_e) {
@@ -957,7 +1043,7 @@ app.get('/api/admin/orders', authenticateToken, requireRole('admin'), (req, res,
   const offset = (page - 1) * limit;
   
   const query = `
-    SELECT o.order_id, o.order_number, o.total_amount, o.payment_method, o.status, o.payment_status, o.created_at, u.user_id, u.username, u.full_name, COUNT(oi.order_item_id) AS item_count
+    SELECT o.order_id, o.order_number, o.total_amount, o.payment_method, o.status, o.payment_status, o.order_type, o.scheduled_at, o.created_at, u.user_id, u.username, u.full_name, COUNT(oi.order_item_id) AS item_count
     FROM orders o
     LEFT JOIN users u ON o.user_id = u.user_id
     LEFT JOIN order_items oi ON o.order_id = oi.order_id
@@ -981,7 +1067,7 @@ app.get('/api/admin/orders', authenticateToken, requireRole('admin'), (req, res,
   });
 });
 
-// Get admin order details
+// Get admin order details - UPDATED FOR MODAL (FIXED NaN ISSUE)
 app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, res, next) => {
   const orderId = parseInt(req.params.id);
   
@@ -990,7 +1076,32 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
   }
   
   const query = `
-    SELECT o.*, u.username, u.full_name, u.email, u.phone, oi.order_item_id, oi.item_id, oi.quantity, oi.unit_price, oi.subtotal, mi.item_name, mi.image_url
+    SELECT 
+      o.order_id,
+      o.order_number,
+      o.total_amount,
+      o.payment_method,
+      o.status,
+      o.payment_status,
+      o.order_type,
+      o.scheduled_at,
+      o.special_instructions,
+      o.created_at,
+      o.updated_at,
+      u.user_id,
+      u.username,
+      u.full_name,
+      u.email,
+      u.phone,
+      oi.order_item_id,
+      oi.item_id,
+      oi.quantity,
+      oi.unit_price,
+      oi.subtotal,
+      -- Select the snapshot name first, fall back to current name
+      COALESCE(oi.item_name_snapshot, mi.item_name) AS item_name, 
+      mi.image_url,
+      mi.description  -- <--- CRITICAL: Fetching the description
     FROM orders o
     LEFT JOIN users u ON o.user_id = u.user_id
     LEFT JOIN order_items oi ON o.order_id = oi.order_id
@@ -1009,105 +1120,56 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
     }
     
     const orderData = results[0];
+    
+    // Map items with robust null/NaN checks
     const items = results
       .filter(r => r.order_item_id !== null)
-      .map(r => ({
-        orderItemId: r.order_item_id,
-        itemId: r.item_id,
-        quantity: r.quantity,
-        unitPrice: r.unit_price,
-        subtotal: r.subtotal,
-        itemName: r.item_name,
-        imageUrl: r.image_url
-      }));
+      .map(r => {
+        // FIX for NaN: Ensure quantity and price are safe numbers
+        const safeQuantity = parseInt(r.quantity) || 0;
+        const safeUnitPrice = parseFloat(r.unit_price) || 0.00;
+        const safeSubtotal = parseFloat(r.subtotal) || (safeQuantity * safeUnitPrice);
+
+        // FIX for null name/description: Provide fallbacks
+        const safeItemName = r.item_name || `Item Not Found (ID: ${r.item_id})`;
+        const safeDescription = r.description || 'No description available.'; 
+        
+        return {
+          order_item_id: r.order_item_id,
+          item_id: r.item_id,
+          item_name: safeItemName,
+          description: safeDescription, // <--- Correctly mapped
+          quantity: safeQuantity, 
+          price: safeUnitPrice,
+          subtotal: safeSubtotal,
+          image_url: r.image_url
+        };
+      });
+    
+    // Calculate total item count
+    const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
     
     res.json({
-      orderId: orderData.order_id,
-      orderNumber: orderData.order_number,
-      totalAmount: orderData.total_amount,
-      paymentMethod: orderData.payment_method,
+      order_id: orderData.order_id,
+      order_number: orderData.order_number,
+      user_id: orderData.user_id,
+      username: orderData.username,
+      full_name: orderData.full_name,
+      email: orderData.email,
+      phone: orderData.phone,
+      total_amount: orderData.total_amount,
+      payment_method: orderData.payment_method,
       status: orderData.status,
-      paymentStatus: orderData.payment_status,
-      specialInstructions: orderData.special_instructions,
-      createdAt: orderData.created_at,
-      updatedAt: orderData.updated_at,
-      customer: {
-        userId: orderData.user_id,
-        username: orderData.username,
-        fullName: orderData.full_name,
-        email: orderData.email,
-        phone: orderData.phone
-      },
-      items
+      payment_status: orderData.payment_status,
+      order_type: orderData.order_type,
+      scheduled_at: orderData.scheduled_at,
+      special_instructions: orderData.special_instructions,
+      created_at: orderData.created_at,
+      updated_at: orderData.updated_at,
+      item_count: itemCount,
+      items: items
     });
   });
-});
-
-// Update order status/payment (Admin only)
-app.put('/api/admin/orders/:id/status', authenticateToken, requireRole('admin'), (req, res, next) => {
-  try {
-    const orderId = parseInt(req.params.id);
-    if (isNaN(orderId)) {
-      return res.status(400).json({ error: 'Invalid order ID' });
-    }
-    
-    const { status, payment_status } = req.body || {};
-    const allowedStatus = new Set(Object.values(ORDER_STATUS));
-    const allowedPayment = new Set(Object.values(PAYMENT_STATUS));
-    
-    const updates = [];
-    const params = [];
-    
-    if (status && allowedStatus.has(status)) {
-      updates.push('status = ?');
-      params.push(status);
-    }
-    if (payment_status && allowedPayment.has(payment_status)) {
-      updates.push('payment_status = ?');
-      params.push(payment_status);
-    }
-    
-    if (updates.length === 0) {
-      return res.status(400).json({ error: 'No valid fields to update or invalid values' });
-    }
-    
-    const query = `UPDATE orders SET ${updates.join(', ')}, updated_at = NOW() WHERE order_id = ?`;
-    db.query(query, [...params, orderId], (err, result) => {
-      if (err) {
-        console.error('[DB] Order status update error:', err.message);
-        return res.status(500).json({ error: 'Failed to update order' });
-      }
-      
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ error: 'Order not found' });
-      }
-      
-      const fetchQuery = `
-        SELECT order_id, user_id, order_number, status, payment_status, total_amount, created_at, updated_at
-        FROM orders
-        WHERE order_id = ?
-      `;
-      
-      db.query(fetchQuery, [orderId], (fetchErr, rows) => {
-        if (fetchErr || rows.length === 0) {
-          return res.json({ message: 'Order updated' });
-        }
-        
-        const o = rows[0];
-        try {
-          io.to('admins').emit('order:update', o);
-          io.to(`user:${o.user_id}`).emit('order:update', o);
-        } catch (_e) {
-          console.warn('[SOCKET] Failed to emit order:update');
-        }
-        
-        console.log(`[ORDER] Order ${o.order_number} status updated to ${status || 'no change'}`);
-        res.json({ message: 'Order updated successfully', order: o });
-      });
-    });
-  } catch (error) {
-    next(error);
-  }
 });
 
 // ==================== HEALTH CHECK ==================== 

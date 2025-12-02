@@ -1,6 +1,23 @@
 import React, { useState, useEffect } from 'react';
+// Ensure adminAPI is imported. The original file already does this.
 import { menuAPI, categoryAPI, adminAPI } from '../services/api';
 import { getSocket } from '../services/realtime';
+
+// --- HELPER FUNCTION FOR SCHEDULE DISPLAY (ADD THIS) ---
+const formatScheduleDisplay = (scheduledAt) => {
+  if (!scheduledAt) return 'N/A';
+  const date = new Date(scheduledAt);
+  const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const day = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+  const today = new Date();
+  // Check if it's today
+  if (date.toDateString() === today.toDateString()) {
+    return `Today @ ${time}`;
+  }
+  return `${day} @ ${time}`;
+};
+// --------------------------------------------------------
 
 
 function AdminDashboard() {
@@ -111,6 +128,30 @@ function AdminDashboard() {
     };
   }, []);
 
+  // --- Style Helper Function for Status/Payment (ADD/DEFINE THIS) ---
+  const getStatusClasses = (status) => {
+    switch (status) {
+      case 'pending':
+      case 'confirmed':
+      case 'preparing':
+      case 'ready':
+        // Yellow/Blue for in-progress/pending
+        return status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-blue-100 text-blue-700';
+      case 'completed':
+      case 'paid':
+        // Green for success
+        return 'bg-green-100 text-green-700';
+      case 'cancelled':
+      case 'refunded':
+        // Red for cancelled/refunded
+        return 'bg-red-100 text-red-700';
+      default:
+        return 'bg-gray-100 text-gray-700';
+    }
+  };
+  // -----------------------------------------------------------------
+
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -160,7 +201,8 @@ function AdminDashboard() {
         {!loading && activeTab === 'overview' && <OverviewTab menuItems={menuItems} orders={orders} />}
         {!loading && activeTab === 'menu' && <MenuTab menuItems={menuItems} categories={categories} />}
         {!loading && activeTab === 'categories' && <CategoriesTab categories={categories} />}
-        {!loading && activeTab === 'orders' && <OrdersTab orders={orders} />}
+        {/* UPDATED OrdersTab CALL: Pass the new helper function */}
+        {!loading && activeTab === 'orders' && <OrdersTab orders={orders} getStatusClasses={getStatusClasses} />}
       </div>
     </div>
   );
@@ -174,7 +216,7 @@ function OverviewTab({ menuItems, orders }) {
 
   const stats = [
     { name: 'Total Orders', value: totalOrders, icon: '🛒', color: 'bg-blue-500' },
-    { name: 'Total Revenue', value: `₹${totalRevenue.toFixed(2)}`, icon: '💰', color: 'bg-green-500' },
+    { name: 'Total Revenue', value: `Rs ${totalRevenue.toFixed(2)}`, icon: '💰', color: 'bg-green-500' },
     { name: 'Pending Orders', value: pendingOrders, icon: '⏳', color: 'bg-yellow-500' },
     { name: 'Menu Items', value: menuItems.length, icon: '🍽️', color: 'bg-purple-500' }
   ];
@@ -209,7 +251,7 @@ function OverviewTab({ menuItems, orders }) {
                   <p className="text-sm text-gray-500">{new Date(order.created_at).toLocaleString()}</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-semibold text-gray-900">₹{parseFloat(order.total_amount).toFixed(2)}</p>
+                  <p className="font-semibold text-gray-900">Rs {parseFloat(order.total_amount).toFixed(2)}</p>
                   <p className="text-xs px-2 py-1 rounded bg-blue-100 text-blue-700">
                     {order.status.toUpperCase()}
                   </p>
@@ -230,7 +272,7 @@ function OverviewTab({ menuItems, orders }) {
                   <p className="text-sm text-gray-500">{item.category_name}</p>
                 </div>
                 <div className="text-right">
-                  <p className="font-semibold text-gray-900">₹{parseFloat(item.price).toFixed(2)}</p>
+                  <p className="font-semibold text-gray-900">Rs {parseFloat(item.price).toFixed(2)}</p>
                   <p className={`text-xs px-2 py-1 rounded ${item.is_available ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
                     {item.is_available ? 'Available' : 'Unavailable'}
                   </p>
@@ -386,7 +428,7 @@ function MenuTab({ menuItems, categories }) {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">Price (₹) *</label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Price (Rs) *</label>
                 <input
                   type="number"
                   step="0.01"
@@ -453,7 +495,7 @@ function MenuTab({ menuItems, categories }) {
                 <p className="text-sm text-gray-600 mb-2">{item.category_name}</p>
                 <p className="text-sm text-gray-600 mb-3">{item.description}</p>
                 <div className="flex justify-between items-center">
-                  <span className="text-lg font-bold text-blue-600">₹{parseFloat(item.price).toFixed(2)}</span>
+                  <span className="text-lg font-bold text-blue-600">Rs {parseFloat(item.price).toFixed(2)}</span>
                   <div className="flex gap-2">
                     <button
                       onClick={() => handleEdit(item)}
@@ -572,74 +614,175 @@ function CategoriesTab({ categories }) {
   );
 }
 
-// Orders Tab
-function OrdersTab({ orders }) {
-  const [updatingId, setUpdatingId] = useState(null);
-
+// Order Detail Modal Component (FIXED: Improved visibility and z-index)
+function OrderDetailModal({ order, orderDetails, loading, onClose, getStatusClasses }) {
   return (
-    <div>
-      <h2 className="text-2xl font-bold text-gray-900 mb-6">All Orders ({orders.length})</h2>
-
-      {orders.length === 0 ? (
-        <div className="bg-white rounded-lg shadow-sm p-12 text-center text-gray-500 border border-gray-100">
-          No orders yet
+    // FIX 1: Increased Z-index to 50 and ensured full screen coverage
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[100] p-4"> 
+      <div 
+        // FIX 2: Reduced max-width (already done, ensuring it stays smaller)
+        className="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[90vh] overflow-y-auto" 
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Modal Header */}
+        <div className="sticky top-0 bg-gradient-to-r from-indigo-600 to-purple-600 text-white px-8 py-6 rounded-t-2xl flex justify-between items-center shadow-lg z-10">
+          <div>
+            <h2 className="text-2xl font-bold">Order Details</h2>
+            <p className="text-indigo-100 text-sm mt-1">Order #{order.order_number}</p>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-white hover:bg-white hover:bg-opacity-20 rounded-full p-2 transition-colors"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-      ) : (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-100 overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Order #</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Customer</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Items</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Total</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Payment</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Date</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-200">
-              {orders.map((order) => (
-                <tr key={order.order_id} className="hover:bg-gray-50">
-                  <td className="px-6 py-3 font-medium text-gray-900">{order.order_number}</td>
-                  <td className="px-6 py-3 text-gray-700">{order.full_name || order.username || `User #${order.user_id}`}</td>
-                  <td className="px-6 py-3 text-gray-700">{order.item_count}</td>
-                  <td className="px-6 py-3 text-gray-900 font-semibold">₹{parseFloat(order.total_amount).toFixed(2)}</td>
-                  <td className="px-6 py-3">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      order.payment_status === 'paid' ? 'bg-green-100 text-green-700' :
-                      order.payment_status === 'refunded' ? 'bg-red-100 text-red-700' :
-                      'bg-yellow-100 text-yellow-700'
+
+        {/* Modal Content */}
+        <div className="p-8">
+          {loading ? (
+            <div className="text-center py-12">
+              <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-indigo-600"></div>
+              <p className="mt-4 text-gray-600">Loading order details...</p>
+            </div>
+          ) : orderDetails ? (
+            <div className="space-y-6">
+              {/* Customer Information */}
+              <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                  <svg className="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                  </svg>
+                  Customer Information
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-sm text-gray-600">Name</p>
+                    <p className="font-semibold text-gray-900">{order.full_name || order.username || 'N/A'}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">User ID</p>
+                    <p className="font-semibold text-gray-900">#{order.user_id}</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Order Information */}
+              <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                  <svg className="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                  </svg>
+                  Order Information
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <p className="text-sm text-gray-600">Order Type</p>
+                    <span className={`inline-block mt-1 px-3 py-1 rounded-full text-xs font-semibold ${
+                      order.order_type === 'scheduled' ? 'bg-orange-100 text-orange-700' : 'bg-indigo-100 text-indigo-700'
                     }`}>
-                      {(order.payment_status || 'pending').toUpperCase()}
+                      {(order.order_type || 'ASAP').toUpperCase()}
                     </span>
-                  </td>
-                  <td className="px-6 py-3">
-                    <span className={`px-2 py-1 rounded text-xs font-medium ${
-                      order.status === 'completed' ? 'bg-green-100 text-green-700' :
-                      order.status === 'cancelled' ? 'bg-red-100 text-red-700' :
-                      order.status === 'ready' ? 'bg-blue-100 text-blue-700' :
-                      'bg-gray-100 text-gray-700'
-                    }`}>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Order Status</p>
+                    <span className={`inline-block mt-1 px-3 py-1 rounded-full text-xs font-semibold ${getStatusClasses(order.status)}`}>
                       {(order.status || 'pending').toUpperCase()}
                     </span>
-                  </td>
-                  <td className="px-6 py-3">
-                    <OrderActions order={order} busy={updatingId === order.order_id} setBusy={(flag) => setUpdatingId(flag ? order.order_id : null)} />
-                  </td>
-                  <td className="px-6 py-3 text-gray-500 text-sm">{new Date(order.created_at).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                  <div>
+                    <p className="text-sm text-gray-600">Payment Status</p>
+                    <span className={`inline-block mt-1 px-3 py-1 rounded-full text-xs font-semibold ${getStatusClasses(order.payment_status)}`}>
+                      {(order.payment_status || 'pending').toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4 pt-4 border-t border-gray-300">
+                  <div>
+                    <p className="text-sm text-gray-600">Order Placed</p>
+                    <p className="font-semibold text-gray-900">{new Date(order.created_at).toLocaleString()}</p>
+                  </div>
+                  {order.order_type === 'scheduled' && order.scheduled_at && (
+                    <div>
+                      <p className="text-sm text-gray-600">Scheduled For</p>
+                      <p className="font-semibold text-orange-600">{new Date(order.scheduled_at).toLocaleString()}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Order Items (REFINED UI) */}
+              <div className="bg-gray-50 rounded-xl p-6 border border-gray-200">
+                <h3 className="text-lg font-bold text-gray-900 mb-4 flex items-center">
+                  <svg className="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  Order Items
+                </h3>
+                <ul className="divide-y divide-gray-200">
+                  {orderDetails.items && orderDetails.items.length > 0 ? (
+                    orderDetails.items.map((item, index) => (
+                      <li key={index} className="py-3 px-2 hover:bg-white rounded-lg transition-colors">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1 pr-4">
+                            <p className="font-semibold text-gray-900 text-base">{item.item_name} <span className="text-sm font-normal text-gray-500">x{item.quantity}</span></p>
+                            {/* Display description if available and not the fallback 'No description available.' */}
+                            {item.description && item.description !== 'No description available.' && (
+                                <p className="text-xs text-gray-500 mt-1 italic line-clamp-2">{item.description}</p>
+                            )}
+                          </div>
+                          <div className="text-right flex-shrink-0">
+                            <p className="font-bold text-lg text-indigo-600">Rs {(parseFloat(item.subtotal || item.price * item.quantity)).toFixed(2)}</p>
+                            <p className="text-xs text-gray-600">(@ Rs {parseFloat(item.price).toFixed(2)}/unit)</p>
+                          </div>
+                        </div>
+                      </li>
+                    ))
+                  ) : (
+                    <p className="text-gray-500 text-center py-4">No items found</p>
+                  )}
+                </ul>
+              </div>
+
+              {/* Order Summary */}
+              <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl p-6 border-2 border-indigo-200">
+                <div className="flex justify-between items-center">
+                  <div>
+                    <p className="text-gray-700 font-medium">Total Items</p>
+                    <p className="text-2xl font-bold text-gray-900">{order.item_count}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-gray-700 font-medium">Total Amount</p>
+                    <p className="text-3xl font-extrabold text-indigo-600">Rs {parseFloat(order.total_amount).toFixed(2)}</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-12 text-gray-500">
+              <p>Failed to load order details</p>
+            </div>
+          )}
         </div>
-      )}
+
+        {/* Modal Footer */}
+        <div className="bg-gray-50 px-8 py-4 rounded-b-2xl border-t border-gray-200 flex justify-end">
+          <button
+            onClick={onClose}
+            className="px-6 py-2.5 bg-gray-600 text-white rounded-lg font-semibold hover:bg-gray-700 transition-colors shadow-md"
+          >
+            Close
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
-// Order Actions Component
+
+// Order Actions Component (RETAINED)
 function OrderActions({ order, busy, setBusy }) {
   const [status, setStatus] = useState(order.status || 'pending');
   const [payment, setPayment] = useState(order.payment_status || 'pending');
@@ -682,11 +825,137 @@ function OrderActions({ order, busy, setBusy }) {
       </select>
       <button
         onClick={handleUpdate}
-        disabled={busy}
+        disabled={busy || (order.status === status && order.payment_status === payment)}
         className="text-xs px-2 py-1 rounded bg-blue-500 text-white hover:bg-blue-600 disabled:opacity-50 transition-colors"
       >
         {busy ? 'Updating...' : 'Save'}
       </button>
+    </div>
+  );
+}
+
+// Orders Tab (UPDATED: New UI)
+function OrdersTab({ orders, getStatusClasses }) {
+  const [updatingId, setUpdatingId] = useState(null);
+  const [selectedOrder, setSelectedOrder] = useState(null);
+  const [orderDetails, setOrderDetails] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
+
+  const fetchOrderDetails = async (orderId) => {
+    setLoadingDetails(true);
+    try {
+      // Assuming adminAPI has an endpoint for detailed order info
+      const response = await adminAPI.getOrderDetails(orderId);
+      setOrderDetails(response.data);
+    } catch (err) {
+      console.error('Failed to fetch order details:', err);
+      alert('Failed to load order details');
+    } finally {
+      setLoadingDetails(false);
+    }
+  };
+
+  const handleOrderClick = (order) => {
+    setSelectedOrder(order);
+    fetchOrderDetails(order.order_id);
+  };
+
+  const closeModal = () => {
+    setSelectedOrder(null);
+    setOrderDetails(null);
+  };
+
+  return (
+    <div>
+      <h2 className="text-2xl font-bold text-gray-900 mb-6 border-b pb-4">All Customer Orders ({orders.length})</h2>
+
+      {orders.length === 0 ? (
+        <div className="bg-white rounded-xl shadow-lg p-12 text-center text-lg font-medium text-gray-500 border border-gray-100">
+          No orders have been placed yet.
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-lg border border-gray-100 overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-indigo-600 text-white">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider rounded-tl-xl">Order #</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Customer</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Total (Rs)</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Status</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Payment</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider">Details / Date</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider rounded-tr-xl">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {orders.map((order) => (
+                <tr key={order.order_id} className="border-b border-gray-100 last:border-b-0 hover:bg-gray-50 transition-colors">
+                  
+                  {/* Order # (Clickable) */}
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => handleOrderClick(order)}
+                      className="font-bold text-sm text-indigo-700 hover:text-indigo-900 hover:underline cursor-pointer"
+                      title="View Order Details"
+                    >
+                      {order.order_number}
+                    </button>
+                    <p className="text-xs text-gray-500 mt-0.5">{order.item_count} Items</p>
+                  </td>
+                  
+                  {/* Customer */}
+                  <td className="px-4 py-3 text-gray-800 text-sm">{order.full_name || order.username || `User #${order.user_id}`}</td>
+                  
+                  {/* Total */}
+                  <td className="px-4 py-3 text-green-700 font-extrabold text-base">Rs {parseFloat(order.total_amount).toFixed(2)}</td>
+                  
+                  {/* Status */}
+                  <td className="px-4 py-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusClasses(order.status)}`}>
+                      {(order.status || 'pending').toUpperCase()}
+                    </span>
+                  </td>
+                  
+                  {/* Payment */}
+                  <td className="px-4 py-3">
+                    <span className={`px-3 py-1 rounded-full text-xs font-bold ${getStatusClasses(order.payment_status)}`}>
+                      {(order.payment_status || 'pending').toUpperCase()}
+                    </span>
+                  </td>
+
+                  {/* Type / Schedule / Date */}
+                  <td className="px-4 py-3 text-gray-700 text-xs">
+                      <span className={`font-semibold text-xs px-2 py-0.5 rounded ${
+                        order.order_type === 'scheduled' ? 'bg-orange-50 text-orange-600' : 'bg-green-50 text-green-600'
+                      }`}>
+                        {(order.order_type || 'ASAP').toUpperCase()}
+                      </span>
+                      <p className="text-gray-500 mt-1">
+                        {order.order_type === 'scheduled' ? formatScheduleDisplay(order.scheduled_at) : new Date(order.created_at).toLocaleDateString()}
+                      </p>
+                  </td>
+                  
+                  {/* Actions */}
+                  <td className="px-4 py-3">
+                    <OrderActions order={order} busy={updatingId === order.order_id} setBusy={(flag) => setUpdatingId(flag ? order.order_id : null)} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Order Detail Modal (RENDER THE MODAL) */}
+      {selectedOrder && (
+        <OrderDetailModal
+          order={selectedOrder}
+          orderDetails={orderDetails}
+          loading={loadingDetails}
+          onClose={closeModal}
+          getStatusClasses={getStatusClasses}
+        />
+      )}
     </div>
   );
 }

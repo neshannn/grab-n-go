@@ -143,7 +143,16 @@ export const adminAPI = {
     }
   },
   
-  getOrderDetails: (id) => api.get(`/admin/orders/${id}`),
+  // NEW: Get detailed order information including items
+  getOrderDetails: async (orderId) => {
+    try {
+      const response = await api.get(`/admin/orders/${orderId}`);
+      return response;
+    } catch (error) {
+      console.error('Failed to fetch order details:', error);
+      throw error;
+    }
+  },
   
   updateOrderStatus: (id, payload) => api.put(`/admin/orders/${id}/status`, payload),
 };

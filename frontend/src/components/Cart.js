@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { orderAPI } from '../services/api';
@@ -8,6 +7,12 @@ import './Cart.css';
 function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [specialInstructions, setSpecialInstructions] = useState('');
+  
+  // --- NEW: State for scheduling ---
+  const [orderType, setOrderType] = useState('asap'); // 'asap' or 'scheduled'
+  const [scheduledTime, setScheduledTime] = useState('');
+  // --------------------------------
+  
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { showToast } = useToast();
@@ -16,11 +21,34 @@ function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
     return cart.reduce((total, item) => total + (item.price * item.quantity), 0);
   };
 
+  // --- NEW: Helper to get current date/time for min attribute ---
+  const getMinDateTime = () => {
+    const now = new Date();
+    now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+    return now.toISOString().slice(0, 16);
+  };
+  // -----------------------------------------------------------
+
   const handlePlaceOrder = async () => {
     if (cart.length === 0) {
       showToast('Your cart is empty', 'error');
       return;
     }
+
+    // --- NEW: Validation for Scheduled Time ---
+    if (orderType === 'scheduled') {
+      if (!scheduledTime) {
+        showToast('Please select a time for your order', 'error');
+        return;
+      }
+      const selectedDate = new Date(scheduledTime);
+      const now = new Date();
+      if (selectedDate < now) {
+        showToast('Please select a future time', 'error');
+        return;
+      }
+    }
+    // ------------------------------------------
 
     setLoading(true);
 
@@ -32,7 +60,11 @@ function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
           price: item.price
         })),
         payment_method: paymentMethod,
-        special_instructions: specialInstructions
+        special_instructions: specialInstructions,
+        // --- NEW: Add scheduling data to payload ---
+        order_type: orderType, 
+        scheduled_at: orderType === 'scheduled' ? scheduledTime : null
+        // -------------------------------------------
       };
 
       const response = await orderAPI.createOrder(orderData);
@@ -137,6 +169,49 @@ function Cart({ cart, onUpdateQuantity, onRemove, onClearCart }) {
             <span>Total:</span>
             <span>Rs{calculateTotal().toFixed(2)}</span>
           </div>
+
+          {/* --- NEW: Order Timing Section --- */}
+          
+          <div className="order-timing-section">
+            <label>When would you like your order?</label>
+            <div className="timing-options">
+              <label className={`radio-label ${orderType === 'asap' ? 'selected' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="orderType" 
+                  value="asap" 
+                  checked={orderType === 'asap'}
+                  onChange={(e) => setOrderType(e.target.value)}
+                />
+                ASAP (Standard Delivery)
+              </label>
+              
+              <label className={`radio-label ${orderType === 'scheduled' ? 'selected' : ''}`}>
+                <input 
+                  type="radio" 
+                  name="orderType" 
+                  value="scheduled" 
+                  checked={orderType === 'scheduled'}
+                  onChange={(e) => setOrderType(e.target.value)}
+                />
+                Schedule for Later
+              </label>
+            </div>
+
+            {orderType === 'scheduled' && (
+              <div className="schedule-input-container">
+                <label>Select Time:</label>
+                <input 
+                  type="datetime-local" 
+                  value={scheduledTime}
+                  min={getMinDateTime()}
+                  onChange={(e) => setScheduledTime(e.target.value)}
+                  className="time-picker"
+                />
+              </div>
+            )}
+          </div>
+          {/* --------------------------------- */}
 
           <div className="payment-method">
             <label>Payment Method:</label>

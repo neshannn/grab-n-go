@@ -18,6 +18,7 @@ function Register() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { showToast } = useToast();
+  // State is initialized based on URL parameter
   const [selectedRole, setSelectedRole] = useState(role === 'admin' ? 'admin' : 'customer');
   const isAdmin = selectedRole === 'admin';
 
@@ -46,6 +47,8 @@ function Register() {
     setLoading(true);
 
     try {
+      // The correct role (from selectedRole state) is passed here.
+      // If the checkbox is checked, 'admin' is sent.
       await authAPI.register({
         username: formData.username,
         email: formData.email,
@@ -192,15 +195,18 @@ function Register() {
                 placeholder="••••••••"
               />
             </div>
+            {/* FIX: Disable checkbox if 'admin' role is passed in URL, locking the role */}
             <div className="flex items-center">
               <input
                 type="checkbox"
                 checked={selectedRole === 'admin'}
                 onChange={(e) => setSelectedRole(e.target.checked ? 'admin' : 'customer')}
                 className="mr-2"
+                disabled={role === 'admin'} // <--- The Fix
               />
               <label className="block text-sm font-medium text-gray-700">
                 Click here to register as Admin
+                {role === 'admin' && <span className="text-xs text-purple-500 ml-2">(Locked via URL)</span>}
               </label>
             </div>
 
