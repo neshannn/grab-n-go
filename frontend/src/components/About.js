@@ -1,72 +1,103 @@
-
 import React from 'react';
 import { Link } from 'react-router-dom';
 
+import heroImage from '../assets/gngbg.png'; 
+
 function About({ user }) {
+  const HERO_IMAGE_URL = heroImage; 
+
   return (
-    <div className="min-h-screen bg-gradient-to-b from-white to-orange-50">
-      <header className="max-w-6xl mx-auto px-4 pt-16 pb-8">
-        <div className="grid md:grid-cols-2 gap-10 items-center">
-          <div>
-            <h1 className="text-4xl md:text-6xl font-extrabold leading-tight text-gray-500">
-              Fast, Fresh, & Convenient Canteen Ordering.
-            </h1>
-            <p className="mt-4 text-lg text-gray-600">
-              Skip the queue. Discover curated menus, add to cart, and place orders in seconds. Like your favorite delivery apps but built for your campus canteen.
-            </p>
-            <div className="mt-8 flex flex-wrap gap-3">
-              <Link to={user ? "/menu" : "/register/customer"} className="inline-flex items-center justify-center px-6 py-3 rounded-lg bg-primary-600 hover:bg-primary-700 text-white font-semibold shadow-md focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primary-300 transition-all">
-                Get Started
+    <div className="min-h-screen bg-white">
+      
+      <header 
+        className="relative h-[60vh] md:h-[70vh] flex items-center justify-center bg-gray-900" 
+        style={{
+          backgroundImage: `url(${HERO_IMAGE_URL})`,
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+        }}
+      >
+        <div className="absolute inset-0 bg-black/50 backdrop-brightness-75"></div>
+        
+        <div className="relative max-w-4xl mx-auto px-4 text-center z-10">
+          <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold leading-tight text-white tracking-tight drop-shadow-lg">
+            Skip the Queue. <span className="text-orange-400">Grab N Go</span> Fast.
+          </h1>
+          <p className="mt-4 text-xl text-white/90 font-medium drop-shadow-md">
+            Your campus canteen, redefined. Browse fresh daily specials, place your order online, and pick up when it's ready.
+          </p>
+          
+          <div className="mt-10 flex flex-wrap justify-center gap-4">
+            <Link 
+              to={user ? "/menu" : "/register/customer"} 
+              className="inline-flex items-center justify-center px-10 py-3 rounded-full bg-orange-600 hover:bg-orange-700 text-white font-bold text-lg shadow-2xl shadow-orange-500/50 focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-orange-300 transition-all transform hover:scale-[1.02]"
+            >
+              Start Ordering Now
+            </Link>
+            
+            {!user && (
+              <Link 
+                to="/login/customer" 
+                className="inline-flex items-center justify-center px-10 py-3 rounded-full border-2 border-white/50 text-white font-semibold text-lg hover:border-orange-500 hover:text-orange-400 transition-all"
+              >
+                Log In
               </Link>
-              {!user && (
-                <Link to="/login/customer" className="inline-flex items-center justify-center px-6 py-3 rounded-lg border border-primary-200 text-primary-700 hover:bg-primary-50 font-semibold focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-primary-200 transition-all">
-                  Sign In
-                </Link>
-              )}
-            </div>
-            <div className="mt-8 flex items-center gap-6 text-sm text-gray-500">
-              <div className="flex items-center gap-2">
-                <span className="text-primary-600">★</span>
-                Trusted by students and staff
-              </div>
-              <div className="flex items-center gap-2">
-                <span className="text-primary-600">⚡</span>
-                Under-a-minute checkout
-              </div>
-            </div>
-          </div>
-          <div className="relative">
-            <div className="aspect-[4/3] rounded-2xl bg-gradient-to-tr from-primary-100 to-orange-100 shadow-inner flex items-center justify-center text-7xl">
-              🍔
-            </div>
+            )}
           </div>
         </div>
       </header>
 
-      <section className="max-w-6xl mx-auto px-4 py-10">
-        <h2 className="text-2xl font-bold text-gray-900">How it works</h2>
-        <div className="mt-6 grid md:grid-cols-3 gap-6">
-          <div className="p-6 rounded-xl bg-white shadow">
-            <div className="text-3xl">🔎</div>
-            <h3 className="mt-3 font-semibold">Browse menu</h3>
-            <p className="mt-2 text-gray-600">Explore categories, search items, and see availability in real time.</p>
-          </div>
-          <div className="p-6 rounded-xl bg-white shadow">
-            <div className="text-3xl">🛒</div>
-            <h3 className="mt-3 font-semibold">Add to cart</h3>
-            <p className="mt-2 text-gray-600">Customize quantities and review pricing before checkout.</p>
-          </div>
-          <div className="p-6 rounded-xl bg-white shadow">
-            <div className="text-3xl">✅</div>
-            <h3 className="mt-3 font-semibold">Place order</h3>
-            <p className="mt-2 text-gray-600">Pay your way and track order status until it’s ready.</p>
+      <section className="bg-gray-50 py-16 sm:py-20 lg:py-24">
+        <div className="max-w-7xl mx-auto px-4">
+          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 text-center">
+            How Grab N Go Works
+          </h2>
+          
+          <div className="mt-12 grid md:grid-cols-3 gap-8">
+            
+            <div className="p-8 rounded-2xl bg-white shadow-lg border-t-4 border-orange-500 hover:shadow-xl transition-shadow">
+              <div className="text-4xl font-bold text-orange-600">1. Browse</div>
+              <h3 className="mt-3 text-xl font-bold text-gray-900">Explore Today's Menu</h3>
+              <p className="mt-2 text-gray-600">
+                Check out the daily specials, filter by category, and see item availability in real-time.
+              </p>
+            </div>
+            
+            <div className="p-8 rounded-2xl bg-white shadow-lg border-t-4 border-orange-500 hover:shadow-xl transition-shadow">
+              <div className="text-4xl font-bold text-orange-600">2. Order</div>
+              <h3 className="mt-3 text-xl font-bold text-gray-900">Place Your Order Instantly</h3>
+              <p className="mt-2 text-gray-600">
+                Add items to your cart and complete checkout securely with your preferred payment method.
+              </p>
+            </div>
+            
+            <div className="p-8 rounded-2xl bg-white shadow-lg border-t-4 border-orange-500 hover:shadow-xl transition-shadow">
+              <div className="text-4xl font-bold text-orange-600">3. Pick Up</div>
+              <h3 className="mt-3 text-xl font-bold text-gray-900">Collect Your Meal</h3>
+              <p className="mt-2 text-gray-600">
+                Receive a notification when your order status changes to 'Ready' and skip the line to grab your food.
+              </p>
+            </div>
           </div>
         </div>
       </section>
+
+      <div className="py-12 bg-white border-t border-gray-100">
+        <div className="max-w-7xl mx-auto px-4 text-center">
+          <p className="text-lg font-medium text-gray-500">
+            Ready to change the way you grab lunch?
+          </p>
+          <Link 
+            to={user ? "/menu" : "/register/customer"} 
+            className="mt-4 inline-flex items-center justify-center px-8 py-3 rounded-xl bg-orange-500 text-white font-bold text-xl hover:bg-orange-600 transition-colors"
+          >
+            Go to Menu
+          </Link>
+        </div>
+      </div>
     </div>
   );
 }
 
 export default About;
-
-

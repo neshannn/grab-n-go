@@ -1,4 +1,4 @@
-// server.js - Main Express Server (Security Hardened - DIAGNOSTIC)
+// server.js - Main Express Server
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
@@ -8,13 +8,15 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 const app = express();
 const http = require('http').createServer(app);
 const { Server } = require('socket.io');
 
-// ==================== CONSTANTS ==================== 
 const ORDER_STATUS = {
   PENDING: 'pending',
   CONFIRMED: 'confirmed',
@@ -30,7 +32,6 @@ const PAYMENT_STATUS = {
   REFUNDED: 'refunded'
 };
 
-// ==================== CONFIGURATION ====================
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) {
   console.error('CRITICAL: JWT_SECRET must be set in .env file');
@@ -40,10 +41,6 @@ if (!JWT_SECRET) {
 const allowedOrigin = process.env.CORS_ORIGIN || 'http://localhost:3001';
 const NODE_ENV = process.env.NODE_ENV || 'development';
 
-console.log(`[CONFIG] Environment: ${NODE_ENV}`);
-console.log(`[CONFIG] Allowed Origin: ${allowedOrigin}`);
-
-// ==================== MIDDLEWARE ====================
 app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10kb' }));
@@ -55,7 +52,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// HTTPS enforcement in production
 if (NODE_ENV === 'production') {
   app.use((req, res, next) => {
     if (!req.secure && req.get('x-forwarded-proto') !== 'https') {
@@ -65,7 +61,16 @@ if (NODE_ENV === 'production') {
   });
 }
 
-// ==================== RATE LIMITING ====================
+// CRITICAL FIX: Set Cross-Origin-Resource-Policy header
+app.use('/uploads/menu', (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); 
+    next();
+});
+
+const UPLOAD_DEST = path.join(__dirname, 'uploads', 'menu');
+app.use('/uploads/menu', express.static(UPLOAD_DEST));
+
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
@@ -86,7 +91,6 @@ const orderLimiter = rateLimit({
 
 app.use(limiter);
 
-// ==================== REQUEST LOGGING ====================
 const requestLogger = (req, res, next) => {
   req.startTime = Date.now();
   res.on('finish', () => {
@@ -98,16 +102,44 @@ const requestLogger = (req, res, next) => {
 };
 app.use(requestLogger);
 
-// ==================== ERROR HANDLER ====================
 const handleError = (err, req, res, next) => {
   console.error(`[ERROR] ${err.message}`, err.stack);
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: err.message });
+  }
   const statusCode = err.status || 500;
   res.status(statusCode).json({
     error: NODE_ENV === 'production' ? 'Internal server error' : err.message
   });
 };
 
-// ==================== SOCKET.IO ====================
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        if (!fs.existsSync(UPLOAD_DEST)) {
+            fs.mkdirSync(UPLOAD_DEST, { recursive: true });
+        }
+        cb(null, UPLOAD_DEST);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowedMimeTypes = /jpeg|jpg|png|gif/;
+        const isValid = allowedMimeTypes.test(file.mimetype);
+        if (isValid) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only image files (JPEG, PNG, GIF) are allowed'), false); 
+        }
+    }
+});
+
 const io = new Server(http, {
   cors: {
     origin: allowedOrigin,
@@ -180,7 +212,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// ==================== DATABASE ====================
 const db = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
@@ -211,7 +242,6 @@ db.getConnection((err, connection) => {
   }
 });
 
-// ==================== VALIDATION SCHEMAS ====================
 const validateRegister = [
   body('username')
     .trim()
@@ -315,7 +345,6 @@ const validateCategory = [
     .withMessage('is_active must be boolean')
 ];
 
-// Validation result handler middleware
 const handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
   if (!errors.isEmpty()) {
@@ -328,7 +357,6 @@ const handleValidationErrors = (req, res, next) => {
   next();
 };
 
-// ==================== AUTHENTICATION MIDDLEWARE ====================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
@@ -356,10 +384,6 @@ const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-// ==================== AUTH ROUTES ====================
-
-// Register User
-
 app.post(
   '/api/auth/register',
   [
@@ -376,22 +400,18 @@ app.post(
 
     const { username, email, password, full_name, phone } = req.body;
     
-    // 1. Determine the final role, defaulting to 'customer'
     const requestedRole = req.body.role;
     const finalRole = requestedRole === 'admin' ? 'admin' : 'customer';
     
-    // Function to handle the actual user registration
     const executeRegistration = async (roleToInsert) => {
       try {
         const hashedPassword = await bcrypt.hash(password, 10);
         
-        // Use the correct column name 'password' in the INSERT query
         const query = `
           INSERT INTO users (username, email, password, full_name, phone, role, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
         `;
         
-        // The third value is the hashedPassword, which goes into the 'password' column
         db.query(query, [username, email, hashedPassword, full_name || null, phone || null, roleToInsert], (err, result) => {
           if (err) {
             console.error('[DB] Registration error:', err.message);
@@ -402,7 +422,6 @@ app.post(
           }
           
           const userId = result.insertId;
-          // Use the correct column name 'password' in the JWT token signing
           const token = jwt.sign({ user_id: userId, role: roleToInsert }, process.env.JWT_SECRET, { expiresIn: '1d' }); 
           
           console.log('[REGISTER] ✓ User registered:', username, 'as', roleToInsert);
@@ -413,14 +432,11 @@ app.post(
           });
         });
       } catch (error) {
-        // Handle bcrypt or other synchronous errors
         console.error('[AUTH] Sync Error during registration:', error);
         return res.status(500).json({ error: 'Internal server error during registration' });
       }
     };
 
-
-    // 2. Admin limit check (only runs if finalRole is 'admin')
     if (finalRole === 'admin') {
       const countQuery = 'SELECT COUNT(*) AS admin_count FROM users WHERE role = ?';
       db.query(countQuery, ['admin'], (err, results) => {
@@ -438,16 +454,14 @@ app.post(
           });
         }
         
-        // Proceed with admin registration
         executeRegistration(finalRole);
       });
     } else {
-      // Proceed with customer registration
       executeRegistration(finalRole);
     }
   }
 );
-// Login User
+
 app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, async (req, res, next) => {
   try {
     const { username, password } = req.body;
@@ -471,14 +485,12 @@ app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, 
       console.log('[LOGIN] User found:', user.username, 'Role:', user.role);
       
       try {
-        // FIX 1: Add a check for the password column's existence
         if (!user.password) {
             console.warn('[LOGIN] Password hash missing for user:', username);
             return res.status(401).json({ error: 'Invalid credentials' });
         }
         
-        // FIX 2: Correctly reference the new database column name 'user.password'
-        const validPassword = await bcrypt.compare(password, user.password); // <--- FIXED
+        const validPassword = await bcrypt.compare(password, user.password);
         console.log('[LOGIN] Password comparison result:', validPassword);
         
         if (!validPassword) {
@@ -519,7 +531,6 @@ app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, 
   }
 });
 
-// Get current user profile
 app.get('/api/auth/me', authenticateToken, (req, res, next) => {
   const query = 'SELECT user_id, username, email, full_name, phone, role FROM users WHERE user_id = ?';
   db.query(query, [req.user.userId], (err, results) => {
@@ -544,9 +555,31 @@ app.get('/api/auth/me', authenticateToken, (req, res, next) => {
   });
 });
 
-// ==================== MENU ROUTES ====================
+app.post('/api/upload/image', authenticateToken, requireRole('admin'), upload.single('image'), (req, res, next) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded.' });
+    }
 
-// Get All Menu Items
+    const filename = req.file.filename;
+
+    const protocol = req.protocol === 'https' || req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+    const host = req.get('host');
+    
+    const fileUrl = `${protocol}://${host}/uploads/menu/${filename}`;
+
+    res.json({
+      message: 'File uploaded successfully',
+      imageUrl: fileUrl,
+      fileName: filename
+    });
+  } catch (error) {
+    console.error('[UPLOAD] Error:', error.message);
+    next(error);
+  }
+});
+
+
 app.get('/api/menu', (req, res, next) => {
   const query = `
     SELECT mi.*, c.category_name
@@ -565,7 +598,6 @@ app.get('/api/menu', (req, res, next) => {
   });
 });
 
-// Get Menu Item by ID
 app.get('/api/menu/:id', (req, res, next) => {
   const itemId = parseInt(req.params.id);
   if (isNaN(itemId)) {
@@ -585,7 +617,6 @@ app.get('/api/menu/:id', (req, res, next) => {
   });
 });
 
-// Add Menu Item (Admin only)
 app.post('/api/menu', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, (req, res, next) => {
   try {
     const { category_id, item_name, description, price, image_url, is_available } = req.body;
@@ -627,7 +658,6 @@ app.post('/api/menu', authenticateToken, requireRole('admin'), validateMenuItem,
   }
 });
 
-// Update Menu Item (Admin only)
 app.put('/api/menu/:id', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, (req, res, next) => {
   try {
     const itemId = parseInt(req.params.id);
@@ -679,7 +709,6 @@ app.put('/api/menu/:id', authenticateToken, requireRole('admin'), validateMenuIt
   }
 });
 
-// Delete Menu Item (Admin only)
 app.delete('/api/menu/:id', authenticateToken, requireRole('admin'), (req, res, next) => {
   try {
     const itemId = parseInt(req.params.id);
@@ -712,9 +741,6 @@ app.delete('/api/menu/:id', authenticateToken, requireRole('admin'), (req, res, 
   }
 });
 
-// ==================== CATEGORY ROUTES ====================
-
-// Get All Categories
 app.get('/api/categories', (req, res, next) => {
   const query = 'SELECT * FROM categories WHERE is_active = TRUE ORDER BY category_name';
   db.query(query, (err, results) => {
@@ -726,7 +752,6 @@ app.get('/api/categories', (req, res, next) => {
   });
 });
 
-// Create Category (Admin only)
 app.post('/api/categories', authenticateToken, requireRole('admin'), validateCategory, handleValidationErrors, (req, res, next) => {
   try {
     const { category_name, is_active } = req.body;
@@ -757,7 +782,6 @@ app.post('/api/categories', authenticateToken, requireRole('admin'), validateCat
   }
 });
 
-// Update Category (Admin only)
 app.put('/api/categories/:id', authenticateToken, requireRole('admin'), validateCategory, handleValidationErrors, (req, res, next) => {
   try {
     const catId = parseInt(req.params.id);
@@ -810,9 +834,6 @@ app.put('/api/categories/:id', authenticateToken, requireRole('admin'), validate
   }
 });
 
-// ==================== ORDER ROUTES ====================
-
-// Create Order
 app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter, (req, res, next) => {
   try {
     if (!req.user) {
@@ -822,7 +843,6 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
     const { items, payment_method, special_instructions,order_type, scheduled_at} = req.body;
     const userId = req.user.userId;
     
-    // --- NEW: Validation for Scheduling ---
     let finalScheduledTime = null;
     const finalOrderType = order_type === 'scheduled' ? 'scheduled' : 'asap';
 
@@ -842,7 +862,6 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
          return res.status(400).json({ error: 'Scheduled time must be in the future.' });
       }
       
-      // Store as ISO string or MySQL datetime format
       finalScheduledTime = new Date(scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
     }
     
@@ -924,7 +943,7 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
                   totalAmount: total,
                   userId,
                   username: req.user.username,
-                  orderType: finalOrderType, // Pass to socket
+                  orderType: finalOrderType,
                   scheduledAt: finalScheduledTime,
                   at: Date.now()
                 });
@@ -949,7 +968,6 @@ app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter
   }
 });
 
-// Get User Orders
 app.get('/api/orders/my-orders', authenticateToken, requireRole('customer'), (req, res, next) => {
   const userId = req.user.userId;
   const page = Math.max(1, parseInt(req.query.page) || 1);
@@ -980,7 +998,6 @@ app.get('/api/orders/my-orders', authenticateToken, requireRole('customer'), (re
   });
 });
 
-// Get Order Details
 app.get('/api/orders/:id', authenticateToken, requireRole('customer'), (req, res, next) => {
   const orderId = parseInt(req.params.id);
   const userId = req.user.userId;
@@ -1034,9 +1051,31 @@ app.get('/api/orders/:id', authenticateToken, requireRole('customer'), (req, res
   });
 });
 
-// ==================== ADMIN ROUTES ====================
+// Get total quantity sold for each menu item (Admin only)
+app.get('/api/admin/menu/order-counts', authenticateToken, requireRole('admin'), (req, res, next) => {
+  const query = `
+    SELECT 
+      mi.item_id,
+      mi.item_name,
+      mi.image_url,
+      c.category_name,
+      SUM(oi.quantity) AS total_quantity_ordered
+    FROM menu_items mi
+    LEFT JOIN order_items oi ON mi.item_id = oi.item_id
+    LEFT JOIN categories c ON mi.category_id = c.category_id
+    GROUP BY mi.item_id, mi.item_name, mi.image_url, c.category_name
+    ORDER BY total_quantity_ordered DESC, mi.item_name ASC
+  `;
 
-// List all recent orders (Admin only)
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('[DB] Item order counts fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch item order counts' });
+    }
+    res.json(results);
+  });
+});
+
 app.get('/api/admin/orders', authenticateToken, requireRole('admin'), (req, res, next) => {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = 20;
@@ -1067,7 +1106,6 @@ app.get('/api/admin/orders', authenticateToken, requireRole('admin'), (req, res,
   });
 });
 
-// Get admin order details - UPDATED FOR MODAL (FIXED NaN ISSUE)
 app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, res, next) => {
   const orderId = parseInt(req.params.id);
   
@@ -1098,10 +1136,9 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
       oi.quantity,
       oi.unit_price,
       oi.subtotal,
-      -- Select the snapshot name first, fall back to current name
       COALESCE(oi.item_name_snapshot, mi.item_name) AS item_name, 
       mi.image_url,
-      mi.description  -- <--- CRITICAL: Fetching the description
+      mi.description
     FROM orders o
     LEFT JOIN users u ON o.user_id = u.user_id
     LEFT JOIN order_items oi ON o.order_id = oi.order_id
@@ -1121,16 +1158,13 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
     
     const orderData = results[0];
     
-    // Map items with robust null/NaN checks
     const items = results
       .filter(r => r.order_item_id !== null)
       .map(r => {
-        // FIX for NaN: Ensure quantity and price are safe numbers
         const safeQuantity = parseInt(r.quantity) || 0;
         const safeUnitPrice = parseFloat(r.unit_price) || 0.00;
         const safeSubtotal = parseFloat(r.subtotal) || (safeQuantity * safeUnitPrice);
 
-        // FIX for null name/description: Provide fallbacks
         const safeItemName = r.item_name || `Item Not Found (ID: ${r.item_id})`;
         const safeDescription = r.description || 'No description available.'; 
         
@@ -1138,7 +1172,7 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
           order_item_id: r.order_item_id,
           item_id: r.item_id,
           item_name: safeItemName,
-          description: safeDescription, // <--- Correctly mapped
+          description: safeDescription,
           quantity: safeQuantity, 
           price: safeUnitPrice,
           subtotal: safeSubtotal,
@@ -1146,7 +1180,6 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
         };
       });
     
-    // Calculate total item count
     const itemCount = items.reduce((sum, item) => sum + item.quantity, 0);
     
     res.json({
@@ -1172,27 +1205,20 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, 
   });
 });
 
-// ==================== HEALTH CHECK ==================== 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
-// ==================== 404 HANDLER ====================
 app.use((req, res) => {
   res.status(404).json({ error: 'Route not found' });
 });
 
-// ==================== ERROR HANDLER ====================
 app.use(handleError);
 
-// ==================== START SERVER ====================
 const PORT = process.env.PORT || 5000;
 http.listen(PORT, () => {
   console.log(`
-╔══════════════════════════════════════════╗
-║      GrabNGo Server - Hardened           ║
-║      Server running on port ${PORT}          ║
-║      Environment: ${NODE_ENV}                 ║
-╚══════════════════════════════════════════╝
+      Server running on port ${PORT}
+      Environment: ${NODE_ENV}
   `);
 });

@@ -1,21 +1,36 @@
-import React from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import './Navbar.css';
 
 function Navbar({ user, onLogout, cartCount }) {
+  const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const profileRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (profileRef.current && !profileRef.current.contains(event.target)) {
+        setShowProfileMenu(false);
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const toggleProfileMenu = () => {
+    setShowProfileMenu(!showProfileMenu);
+  };
+
+  const handleLogout = () => {
+    setShowProfileMenu(false);
+    onLogout();
+  };
+
   return (
     <nav className="navbar">
       <div className="navbar-container">
         <Link to="/" className="navbar-logo" aria-label="Grab N Go Home">
-          <span style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 36,
-            height: 36,
-            borderRadius: 12,
-            background: 'linear-gradient(135deg,#0ea5e9,#6366f1)'
-          }}>🍔</span>
+          <span className="logo-icon">🍔</span>
           <span>Grab N Go</span>
         </Link>
 
@@ -45,13 +60,48 @@ function Navbar({ user, onLogout, cartCount }) {
                   <NavLink to="/dashboard" className={({ isActive }) => `navbar-link${isActive ? ' active' : ''}`}>Dashboard</NavLink>
                 </li>
               )}
-              <li className="navbar-item">
-                <span className="navbar-user" title={user.username}>
-                  {user.role === 'admin' || user.role === 'staff' ? '🛠️' : '👤'} {user.fullName}
-                </span>
-              </li>
-              <li className="navbar-item">
-                <button onClick={onLogout} className="navbar-button">Logout</button>
+              
+              {/* Profile Menu */}
+              <li className="navbar-item profile-dropdown" ref={profileRef}>
+                <button 
+                  onClick={toggleProfileMenu} 
+                  className={`profile-button ${user.role === 'admin' || user.role === 'staff' ? 'admin-profile' : ''}`}
+                  aria-label="User profile menu"
+                  aria-expanded={showProfileMenu}
+                >
+                  <div className="profile-icon">
+                    <span className="profile-avatar">
+                      {user.fullName ? user.fullName.charAt(0).toUpperCase() : 'U'}
+                    </span>
+                    {(user.role === 'admin' || user.role === 'staff') && (
+                      <span className="admin-badge" aria-label="Admin user">🔒</span>
+                    )}
+                  </div>
+                </button>
+
+                {showProfileMenu && (
+                  <div className="profile-menu">
+                    <div className="profile-menu-header">
+                      <div className="profile-menu-avatar">
+                        {user.fullName ? user.fullName.charAt(0).toUpperCase() : 'U'}
+                      </div>
+                      <div className="profile-menu-info">
+                        <div className="profile-menu-name">{user.fullName}</div>
+                        <div className="profile-menu-email">{user.username}</div>
+                      </div>
+                    </div>
+                    {(user.role === 'admin' || user.role === 'staff') && (
+                      <div className="profile-menu-role">
+                        <span className="role-badge">{user.role === 'admin' ? 'Administrator' : 'Staff'}</span>
+                      </div>
+                    )}
+                    <div className="profile-menu-divider"></div>
+                    <button onClick={handleLogout} className="profile-menu-logout">
+                      <span>🚪</span>
+                      <span>Logout</span>
+                    </button>
+                  </div>
+                )}
               </li>
             </>
           ) : (

@@ -34,65 +34,32 @@ api.interceptors.response.use(
   }
 );
 
-// ==================== AUTH ====================
 export const authAPI = {
   register: (userData) => api.post('/auth/register', userData),
   login: (credentials) => api.post('/auth/login', credentials),
   getCurrentUser: () => api.get('/auth/me'),
 };
 
-// ==================== MENU ====================
 export const menuAPI = {
   getAllItems: () => api.get('/menu'),
   getItemById: (id) => api.get(`/menu/${id}`),
-  
-  addItem: (itemData) => {
-    // Validate required fields
-    if (!itemData.item_name || !itemData.price) {
-      return Promise.reject(new Error('Item name and price are required'));
-    }
-    
-    // Ensure price is a number
-    const price = typeof itemData.price === 'string' ? parseFloat(itemData.price) : itemData.price;
-    if (isNaN(price)) {
-      return Promise.reject(new Error('Price must be a valid number'));
-    }
-    
-    const payload = {
-      item_name: itemData.item_name.trim(),
-      category_id: itemData.category_id ? Number(itemData.category_id) : null,
-      description: itemData.description?.trim() || null,
-      price: price,
-      image_url: itemData.image_url?.trim() || null,
-      is_available: itemData.is_available !== false
-    };
-    
-    console.log('Sending menu item:', payload);
-    return api.post('/menu', payload);
+
+  uploadImage: (imageFormData) => {
+    return api.post('/upload/image', imageFormData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
   },
-  
-  updateItem: (id, itemData) => {
-    const price = typeof itemData.price === 'string' ? parseFloat(itemData.price) : itemData.price;
-    
-    const payload = {
-      item_name: itemData.item_name.trim(),
-      category_id: itemData.category_id ? Number(itemData.category_id) : null,
-      description: itemData.description?.trim() || null,
-      price: price,
-      image_url: itemData.image_url?.trim() || null,
-      is_available: itemData.is_available !== false
-    };
-    
-    return api.put(`/menu/${id}`, payload);
-  },
-  
+
+  addItem: (itemData) => api.post('/menu', itemData),
+  updateItem: (id, itemData) => api.put(`/menu/${id}`, itemData),
   deleteItem: (id) => api.delete(`/menu/${id}`),
 };
 
-// ==================== CATEGORIES ====================
 export const categoryAPI = {
   getAllCategories: () => api.get('/categories'),
-  
+
   addCategory: (categoryData) => {
     if (!categoryData.category_name?.trim()) {
       return Promise.reject(new Error('Category name is required'));
@@ -114,7 +81,6 @@ export const categoryAPI = {
   },
 };
 
-// ==================== ORDERS ====================
 export const orderAPI = {
   createOrder: (orderData) => api.post('/orders', orderData),
   
@@ -131,7 +97,6 @@ export const orderAPI = {
   getOrderById: (id) => api.get(`/orders/${id}`),
 };
 
-// ==================== ADMIN API ====================
 export const adminAPI = {
   getAllOrders: async (page = 1) => {
     try {
@@ -143,18 +108,16 @@ export const adminAPI = {
     }
   },
   
-  // NEW: Get detailed order information including items
   getOrderDetails: async (orderId) => {
     try {
       const response = await api.get(`/admin/orders/${orderId}`);
       return response;
     } catch (error) {
-      console.error('Failed to fetch order details:', error);
+      console.error(`Failed to fetch order ${orderId} details:`, error);
       throw error;
     }
   },
-  
-  updateOrderStatus: (id, payload) => api.put(`/admin/orders/${id}/status`, payload),
-};
 
-export default api;
+  // NEW FUNCTION: Fetch total quantities ordered for all menu items
+  getItemOrderCounts: () => api.get('/admin/menu/order-counts'),
+};
