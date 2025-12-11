@@ -24,8 +24,8 @@ function About({ user }) {
           <h1 className="text-4xl sm:text-5xl lg:text-7xl font-extrabold leading-tight text-white tracking-tight drop-shadow-lg">
             Skip the Queue. <span className="text-orange-400">Grab N Go</span> Fast.
           </h1>
-          <p className="mt-4 text-xl text-white/90 font-medium drop-shadow-md">
-            Your campus canteen, redefined. Browse fresh daily specials, place your order online, and pick up when it's ready.
+          <p className="mt-4 text-xl text-white/90 font-semibold italic tracking-tight sm:text-2xl lg:text-3xl font-medium drop-shadow-md">
+          “ Turning Queues Into Clicks ”
           </p>
           
           <div className="mt-10 flex flex-wrap justify-center gap-4">
@@ -50,7 +50,7 @@ function About({ user }) {
 
       <section className="bg-gray-50 py-16 sm:py-20 lg:py-24">
         <div className="max-w-7xl mx-auto px-4">
-          <h2 className="text-3xl sm:text-4xl font-extrabold text-gray-900 text-center">
+          <h2 className="text-3xl sm:text-4xl font-bold Poppins text-gray-900 text-center">
             How Grab N Go Works
           </h2>
           

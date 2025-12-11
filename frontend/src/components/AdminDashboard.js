@@ -372,7 +372,8 @@ function MenuTab({ menuItems, categories }) {
     e.preventDefault();
     setError('');
 
-    let finalImageUrl = formData.image_url;
+    // Start with the existing URL from state (handles edit mode)
+    let submittedImageUrl = formData.image_url; 
 
     try {
       if (!formData.item_name.trim() || isNaN(Number(formData.price)) || !formData.category_id) {
@@ -380,21 +381,32 @@ function MenuTab({ menuItems, categories }) {
         return;
       }
 
-
+      // --- IMAGE UPLOAD LOGIC ---
       if (imageFile) {
         const imageFormData = new FormData();
         imageFormData.append('image', imageFile); 
 
+        // 1. Upload the image
         const uploadResponse = await menuAPI.uploadImage(imageFormData);
-        finalImageUrl = uploadResponse.imageUrl;
+        
+        // CRITICAL FIX: Access the imageUrl from the 'data' property of the Axios response.
+        submittedImageUrl = uploadResponse?.data?.imageUrl; 
+        
+        // 2. Update the formData state immediately with the new URL
+        setFormData(prevData => ({ 
+          ...prevData, 
+          image_url: submittedImageUrl 
+        }));
       }
+      // --- END IMAGE UPLOAD LOGIC ---
 
       const payload = {
         item_name: formData.item_name.trim(),
         category_id: formData.category_id ? Number(formData.category_id) : null,
         description: formData.description.trim(),
         price: Number(formData.price),
-        image_url: finalImageUrl || null,
+        // Use the captured URL (will be null if upload failed or no file selected)
+        image_url: submittedImageUrl || null, 
         is_available: formData.is_available
       };
 
@@ -417,18 +429,22 @@ function MenuTab({ menuItems, categories }) {
 
   const handleEdit = (item) => {
     setEditing(item);
+    setShowForm(true);
+    setError('');
+    
+    // Convert the MySQL integer (1 or 0) to a JavaScript boolean (true or false)
+    const isAvailableBoolean = Boolean(item.is_available); 
+
     setFormData({
       item_name: item.item_name,
       category_id: item.category_id || '',
       description: item.description || '',
       price: item.price,
       image_url: item.image_url || '',
-      is_available: item.is_available
+      is_available: isAvailableBoolean, // Use the converted boolean
     });
-    setImageFile(null);
-    setShowForm(true);
+    setImageFile(null); // Clear any pending file upload
   };
-
   const handleDelete = async (itemId) => {
     if (window.confirm('Delete this item?')) {
       try {

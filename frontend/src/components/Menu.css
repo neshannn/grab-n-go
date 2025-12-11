@@ -15,7 +15,8 @@
 .menu-header h1 {
   font-size: 48px;
   font-weight: 700;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #ffb347 0%, #ff7746 100%);
+
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
