@@ -1,4 +1,6 @@
 /** @type {import('tailwindcss').Config} */
+const defaultTheme = require('tailwindcss/defaultTheme');
+
 module.exports = {
   content: [
     "./public/index.html",
@@ -7,7 +9,11 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        // Updated 'sans' to include a generic geometric font (e.g., Poppins) first
+        // to satisfy the geometric sans-serif request for body text.
+        sans: ['"Poppins"', 'Inter', ...defaultTheme.fontFamily.sans],
+        // Custom font family for headings
+        inter: ['Inter', ...defaultTheme.fontFamily.sans],
       },
       colors: {
         // Swiggy-like orange brand
@@ -36,5 +42,3 @@ module.exports = {
   },
   plugins: [],
 };
-
-

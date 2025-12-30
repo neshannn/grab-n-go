@@ -1,11 +1,10 @@
-
 import React, { useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { authAPI } from '../services/api';
 import { useToast } from './ToastProvider';
 
 function Login({ onLogin }) {
-  const { role } = useParams(); // Get role from URL
+  const { role } = useParams();
   const [formData, setFormData] = useState({
     username: '',
     password: '',
@@ -33,7 +32,6 @@ function Login({ onLogin }) {
       const response = await authAPI.login(formData);
       const { token, user } = response.data;
       
-      // Check if user role matches the selected login type
       if (isAdmin && user.role !== 'admin' && user.role !== 'staff') {
         setError('Access denied. Admin credentials required.');
         setLoading(false);
@@ -49,7 +47,6 @@ function Login({ onLogin }) {
       onLogin(user, token);
       showToast('Logged in successfully', 'success');
       
-      // Redirect based on role
       if (user.role === 'admin' || user.role === 'staff') {
         navigate('/dashboard');
       } else {
@@ -65,9 +62,8 @@ function Login({ onLogin }) {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-500 via-purple-600 to-primary-700 flex items-center justify-center px-4 py-12">
+    <div className="min-h-screen bg-gradient-to-br from-primary-500 via-purple-600 to-primary-700 flex items-center justify-center px-4 py-12 font-sans">
       <div className="max-w-md w-full">
-        {/* Back Button */}
         <button
           onClick={() => navigate('/')}
           className="mb-6 flex items-center text-white hover:text-white/80 transition-colors"
@@ -79,7 +75,6 @@ function Login({ onLogin }) {
         </button>
 
         <div className="bg-white rounded-2xl shadow-2xl p-8">
-          {/* Header */}
           <div className="text-center mb-8">
             <div className={`w-20 h-20 ${isAdmin ? 'bg-purple-100' : 'bg-primary-100'} rounded-full flex items-center justify-center mx-auto mb-4`}>
               {isAdmin ? (
@@ -92,7 +87,7 @@ function Login({ onLogin }) {
                 </svg>
               )}
             </div>
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">
+            <h2 className="text-3xl font-bold text-gray-900 mb-2 font-inter">
               {isAdmin ? 'Admin Login' : 'Customer Login'}
             </h2>
             <p className="text-gray-600">
@@ -100,7 +95,6 @@ function Login({ onLogin }) {
             </p>
           </div>
 
-          {/* Role switch */}
           <div className="mb-6 grid grid-cols-2 gap-2">
             <button
               onClick={() => navigate('/login/customer')}
@@ -178,7 +172,7 @@ function Login({ onLogin }) {
               ) : (
                 <>
                   <svg className="-ml-1 mr-2 h-5 w-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                    {/* <path strokeLinecap="round" strokeLinejoin="round" d="M15 12H3m12 0l-4-4m4 4l-4 4M21 16v1a2 2 0 01-2 2H7a2 2 0 01-2-2v-1" /> */}
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 12H3m12 0l-4-4m4 4l-4 4M21 16v1a2 2 0 01-2 2H7a2 2 0 01-2-2v-1" />
                   </svg>
                   Sign In
                 </>

@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 const api = axios.create({
   baseURL: API_URL,
@@ -35,37 +35,37 @@ api.interceptors.response.use(
 );
 
 export const authAPI = {
-  register: (userData) => api.post('/auth/register', userData),
-  login: (credentials) => api.post('/auth/login', credentials),
-  getCurrentUser: () => api.get('/auth/me'),
+  register: (userData) => api.post('/api/auth/register', userData),
+  login: (credentials) => api.post('/api/auth/login', credentials),
+  getCurrentUser: () => api.get('/api/auth/me'),
 };
 
 export const menuAPI = {
-  getAllItems: () => api.get('/menu'),
-  getItemById: (id) => api.get(`/menu/${id}`),
+  getAllItems: () => api.get('/api/menu'),
+  getItemById: (id) => api.get(`/api/menu/${id}`),
 
   uploadImage: (imageFormData) => {
-    return api.post('/upload/image', imageFormData, {
+    return api.post('/api/upload/image', imageFormData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
     });
   },
 
-  addItem: (itemData) => api.post('/menu', itemData),
-  updateItem: (id, itemData) => api.put(`/menu/${id}`, itemData),
-  deleteItem: (id) => api.delete(`/menu/${id}`),
+  addItem: (itemData) => api.post('/api/menu', itemData),
+  updateItem: (id, itemData) => api.put(`/api/menu/${id}`, itemData),
+  deleteItem: (id) => api.delete(`/api/menu/${id}`),
 };
 
 export const categoryAPI = {
-  getAllCategories: () => api.get('/categories'),
+  getAllCategories: () => api.get('/api/categories'),
 
   addCategory: (categoryData) => {
     if (!categoryData.category_name?.trim()) {
       return Promise.reject(new Error('Category name is required'));
     }
     
-    return api.post('/categories', {
+    return api.post('/api/categories', {
       category_name: categoryData.category_name.trim(),
       is_active: categoryData.is_active !== false
     });
@@ -77,16 +77,17 @@ export const categoryAPI = {
       is_active: categoryData.is_active !== false
     };
     
-    return api.put(`/categories/${id}`, payload);
+    return api.put(`/api/categories/${id}`, payload);
   },
+  getAllAdminCategories: () => api.get('/api/admin/categories'),
 };
 
 export const orderAPI = {
-  createOrder: (orderData) => api.post('/orders', orderData),
+  createOrder: (orderData) => api.post('/api/orders', orderData),
   
   getMyOrders: async (page = 1) => {
     try {
-      const response = await api.get(`/orders/my-orders?page=${page}`);
+      const response = await api.get(`/api/orders?page=${page}`);
       return response;
     } catch (error) {
       console.error('Failed to fetch orders:', error);
@@ -94,13 +95,13 @@ export const orderAPI = {
     }
   },
   
-  getOrderById: (id) => api.get(`/orders/${id}`),
+  getOrderById: (id) => api.get(`/api/orders/${id}`),
 };
 
 export const adminAPI = {
   getAllOrders: async (page = 1) => {
     try {
-      const response = await api.get(`/admin/orders?page=${page}`);
+      const response = await api.get(`/api/admin/orders?page=${page}`);
       return response;
     } catch (error) {
       console.error('Failed to fetch admin orders:', error);
@@ -110,14 +111,16 @@ export const adminAPI = {
   
   getOrderDetails: async (orderId) => {
     try {
-      const response = await api.get(`/admin/orders/${orderId}`);
+      const response = await api.get(`/api/admin/orders/${orderId}`);
       return response;
     } catch (error) {
       console.error(`Failed to fetch order ${orderId} details:`, error);
       throw error;
     }
   },
+  updateOrderStatus: (id, statusData) => {
+    return api.put(`/api/admin/orders/${id}`, statusData);
+  },
 
-  // NEW FUNCTION: Fetch total quantities ordered for all menu items
-  getItemOrderCounts: () => api.get('/admin/menu/order-counts'),
+  getItemOrderCounts: () => api.get('/api/admin/menu/order-counts'),
 };

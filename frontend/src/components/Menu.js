@@ -13,6 +13,11 @@ function Menu({ user, onAddToCart }) {
   const [searchTerm, setSearchTerm] = useState('');
 
   const { showToast } = useToast();
+  
+  // Filters out items explicitly marked as inactive (is_active = 0)
+  const filterActiveItems = (items) => {
+    return items.filter(item => item.is_active === 1 || item.is_active === true || item.is_active === undefined);
+  };
 
   const fetchData = useCallback(async () => {
     try {
@@ -22,8 +27,13 @@ function Menu({ user, onAddToCart }) {
         categoryAPI.getAllCategories(),
       ]);
       
-      console.log('Menu items fetched:', menuResponse.data);
-      setMenuItems(menuResponse.data);
+      const rawMenuItems = menuResponse.data;
+      
+      // Filter out soft-deleted items on initial load
+      const activeMenuItems = filterActiveItems(rawMenuItems);
+
+      console.log('Menu items fetched:', activeMenuItems.length, 'active items');
+      setMenuItems(activeMenuItems);
       setCategories(categoryResponse.data);
       setError('');
     } catch (err) {
@@ -41,6 +51,14 @@ function Menu({ user, onAddToCart }) {
       console.warn('Invalid update data:', updated);
       return;
     }
+    
+    // If an update marks the item as inactive, remove it from the customer view
+    if (updated.hasOwnProperty('is_active') && updated.is_active === 0) {
+      setMenuItems((prev) => prev.filter((it) => it.item_id !== updated.item_id));
+      console.log(`Menu item ${updated.item_id} soft-deleted via update and removed.`);
+      return;
+    }
+    
     console.log('Menu item updated:', updated);
     setMenuItems((prev) =>
       prev.map((it) => (it.item_id === updated.item_id ? { ...it, ...updated } : it))
@@ -53,22 +71,27 @@ function Menu({ user, onAddToCart }) {
       console.warn('Invalid add data:', added);
       return;
     }
+    
+    // Ignore if the added item is inactive
+    if (added.is_active === 0) {
+      console.log('Ignoring added item because it is inactive:', added.item_id);
+      return;
+    }
+    
     console.log('Menu item added:', added);
     setMenuItems((prev) => {
       const exists = prev.some((it) => it.item_id === added.item_id);
       if (exists) {
-        // Item already exists, update it
         return prev.map((it) =>
           it.item_id === added.item_id ? { ...it, ...added } : it
         );
       } else {
-        // New item, add it to the list
         return [...prev, added];
       }
     });
   }, []);
 
-  // Handle menu item deletion
+  // Handle menu item deletion event
   const handleMenuItemDelete = useCallback(({ item_id }) => {
     if (!item_id) {
       console.warn('Invalid delete data:', item_id);
@@ -85,10 +108,10 @@ function Menu({ user, onAddToCart }) {
     try {
       socket = getSocket();
       
-      // Set up socket listeners
+      // Set up socket listeners for real-time menu synchronization
       socket.on('menu:item:add', handleMenuItemAdd);
       socket.on('menu:item:update', handleMenuItemUpdate);
-      socket.on('menu:item:delete', handleMenuItemDelete);
+      socket.on('menu:item:delete', handleMenuItemDelete); 
       
       console.log('Socket listeners registered for menu updates');
     } catch (err) {
@@ -112,14 +135,25 @@ function Menu({ user, onAddToCart }) {
     const matchesSearch = item.item_name
       .toLowerCase()
       .includes(searchTerm.toLowerCase());
-    return matchesCategory && matchesSearch;
+      
+    // Final display filter: ensure item is still active
+    const isActive = item.is_active === 1 || item.is_active === true || item.is_active === undefined;
+    
+    return matchesCategory && matchesSearch && isActive;
   });
 
   const handleAddToCart = (item) => {
+    // Prevent ordering of soft-deleted items
+    if (item.is_active === 0) {
+      showToast('This item has been removed from the menu and cannot be ordered.', 'error');
+      return;
+    }
+    
     if (!user) {
       showToast('Please login to add items to cart', 'error');
       return;
     }
+    // Prevent admin from adding items to cart
     if (user && user.role !== 'customer') {
       showToast('Admins cannot place orders', 'error');
       return;
@@ -209,10 +243,12 @@ function Menu({ user, onAddToCart }) {
                     className="add-to-cart-btn"
                     onClick={() => handleAddToCart(item)}
                     disabled={
-                      !item.is_available || (user && user.role !== 'customer')
+                      !item.is_available || (user && user.role !== 'customer') || item.is_active === 0
                     }
                   >
-                    {!item.is_available
+                    {item.is_active === 0 
+                      ? 'Removed'
+                      : !item.is_available
                       ? 'Unavailable'
                       : user && user.role !== 'customer'
                       ? 'Customers Only'

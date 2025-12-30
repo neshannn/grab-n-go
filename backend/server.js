@@ -15,6 +15,7 @@ require('dotenv').config();
 
 const app = express();
 const http = require('http').createServer(app);
+app.set('trust proxy', 1);
 const { Server } = require('socket.io');
 
 const ORDER_STATUS = {
@@ -45,7 +46,13 @@ app.use(helmet());
 app.use(morgan('dev'));
 app.use(express.json({ limit: '10kb' }));
 app.use(express.urlencoded({ extended: true, limit: '10kb' }));
-app.set('trust proxy', 1);
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests per windowMs (Increased from default)
+  message: 'Too many requests from this IP, please try again after 15 minutes',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.use(cors({
   origin: allowedOrigin,
@@ -63,18 +70,13 @@ if (NODE_ENV === 'production') {
 }
 
 
-app.use('/uploads', (req, res, next) => {
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); 
-  next();
+app.use('/uploads/menu', (req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin'); 
+    next();
 });
 
-
-const UPLOADS_ROOT = path.join(__dirname, 'uploads');
-
-
-app.use('/uploads', express.static(UPLOADS_ROOT));
-
 const UPLOAD_DEST = path.join(__dirname, 'uploads', 'menu');
+app.use('/uploads/menu', express.static(UPLOAD_DEST));
 
 
 const limiter = rateLimit({
@@ -218,7 +220,6 @@ io.on('connection', (socket) => {
   });
 });
 
-// FIX 1: Convert pool to PromisePool by adding .promise()
 const db = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
   user: process.env.DB_USER || 'root',
@@ -229,15 +230,10 @@ const db = mysql.createPool({
   queueLimit: 0,
   enableKeepAlive: true,
   keepAliveInitialDelayMs: 0
-}).promise(); // CRITICAL FIX: Use promise interface
+});
 
-// FIX 2: Convert initial connection check to promise style
-db.getConnection()
-  .then(connection => {
-    console.log('[DB] ✓ Database connected successfully');
-    connection.release();
-  })
-  .catch(err => {
+db.getConnection((err, connection) => {
+  if (err) {
     console.error('[DB ERROR]', err.message);
     if (err.code === 'PROTOCOL_CONNECTION_LOST') {
       console.error('DATABASE CONNECTION WAS CLOSED');
@@ -248,8 +244,11 @@ db.getConnection()
     if (err.code === 'ER_ACCESS_DENIED_ERROR') {
       console.error('DATABASE ACCESS WAS DENIED - CHECK CREDENTIALS');
     }
-  });
-
+  } else {
+    console.log('[DB] ✓ Database connected successfully');
+    connection.release();
+  }
+});
 
 const validateRegister = [
   body('username')
@@ -393,131 +392,161 @@ const requireRole = (...roles) => (req, res, next) => {
   next();
 };
 
-// FIX 3: Converted to async/await
-// FIX 8: Converted to async/await (Updated to correctly fetch and emit image_url + ADDED DEBUG LOG)
-app.post('/api/menu', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, async (req, res, next) => {
+app.post(
+  '/api/auth/register',
+  [
+    body('username').trim().isLength({ min: 3 }).withMessage('Username must be at least 3 characters'),
+    body('email').isEmail().withMessage('Invalid email address'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters'),
+    body('role').isIn(['customer', 'admin']).optional().withMessage('Invalid role specified'), 
+  ],
+  async (req, res, next) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ error: errors.array()[0].msg });
+    }
+
+    const { username, email, password, full_name, phone } = req.body;
+    
+    const requestedRole = req.body.role;
+    const finalRole = requestedRole === 'admin' ? 'admin' : 'customer';
+    
+    const executeRegistration = async (roleToInsert) => {
+      try {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        
+        const query = `
+          INSERT INTO users (username, email, password, full_name, phone, role, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())
+        `;
+        
+        db.query(query, [username, email, hashedPassword, full_name || null, phone || null, roleToInsert], (err, result) => {
+          if (err) {
+            console.error('[DB] Registration error:', err.message);
+            if (err.code === 'ER_DUP_ENTRY') {
+              return res.status(409).json({ error: 'Username or email already exists' });
+            }
+            return res.status(500).json({ error: 'Registration failed', details: err.message });
+          }
+          
+          const userId = result.insertId;
+          const token = jwt.sign({ user_id: userId, role: roleToInsert }, process.env.JWT_SECRET, { expiresIn: '1d' }); 
+          
+          console.log('[REGISTER] ✓ User registered:', username, 'as', roleToInsert);
+          res.status(201).json({
+            message: 'User registered successfully',
+            token,
+            user: { user_id: userId, username, email, full_name, phone, role: roleToInsert }
+          });
+        });
+      } catch (error) {
+        console.error('[AUTH] Sync Error during registration:', error);
+        return res.status(500).json({ error: 'Internal server error during registration' });
+      }
+    };
+
+    if (finalRole === 'admin') {
+      const countQuery = 'SELECT COUNT(*) AS admin_count FROM users WHERE role = ?';
+      db.query(countQuery, ['admin'], (err, results) => {
+        if (err) {
+          console.error('[DB] Admin count check error:', err.message);
+          return res.status(500).json({ error: 'Database error during admin limit check' });
+        }
+        
+        const adminCount = results[0]?.admin_count || 0;
+        
+        if (adminCount >= 2) { 
+          console.warn(`[REGISTER] Admin limit reached. Count: ${adminCount}`);
+          return res.status(403).json({ 
+            error: 'Admin registration failed: Maximum of 2 admin accounts allowed.' 
+          });
+        }
+        
+        executeRegistration(finalRole);
+      });
+    } else {
+      executeRegistration(finalRole);
+    }
+  }
+);
+
+app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, async (req, res, next) => {
   try {
-    const { category_id, item_name, description, price, image_url, is_available } = req.body;
+    const { username, password } = req.body;
     
-    // DEBUG: Log the received image URL before insertion
-    console.log('[MENU POST] Received data. Item:', item_name, 'Image URL:', image_url);
+    console.log('[LOGIN] Attempting login for:', username);
     
-    const insertQuery = `
-      INSERT INTO menu_items (category_id, item_name, description, price, image_url, is_available, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, NOW())
-    `;
     
-    // 1. Insert the new item
-    const [insertResult] = await db.query(insertQuery, [
-      category_id || null, 
-      item_name, 
-      description || null, 
-      price, 
-      image_url || null, // Insert the image_url (or null if empty/missing)
-      is_available ? 1 : 0
-    ]);
-    
-    const newId = insertResult.insertId;
-    
-    // 2. Fetch the newly created item's complete data from the database
-    const fetchQuery = `
-      SELECT mi.*, c.category_name
-      FROM menu_items mi
-      LEFT JOIN categories c ON mi.category_id = c.category_id
-      WHERE mi.item_id = ?
-    `;
-    
-    const [rows] = await db.query(fetchQuery, [newId]); 
-    
-    if (rows.length === 0) {
-      console.error(`[DB] Failed to retrieve newly inserted item ID: ${newId}`);
-      return res.status(500).json({ error: 'Item created but failed to retrieve details.' });
-    }
-    
-    const newItem = rows[0];
-    
-    // 3. Emit the complete newItem object to clients
-    try {
-      io.to('admins').emit('menu:item:add', newItem);
-      io.to('customers').emit('menu:item:add', newItem);
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit menu:item:add');
-    }
-    
-    // 4. Respond with the successfully created item
-    res.status(201).json({ message: 'Menu item added successfully', item: newItem });
+    const query = 'SELECT user_id, username, email, password, role, full_name FROM users WHERE username = ? OR email = ?'; 
+    db.query(query, [username, username], async (err, results) => {
+      if (err) {
+        console.error('[DB] Login query error:', err.message);
+        return res.status(500).json({ error: 'Login failed' });
+      }
+      
+      if (results.length === 0) {
+        console.warn('[LOGIN] User not found:', username);
+        return res.status(401).json({ error: 'Invalid credentials' });
+      }
+      
+      const user = results[0];
+      console.log('[LOGIN] User found:', user.username, 'Role:', user.role);
+      
+      try {
+        if (!user.password) {
+            console.warn('[LOGIN] Password hash missing for user:', username);
+            return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        const validPassword = await bcrypt.compare(password, user.password);
+        console.log('[LOGIN] Password comparison result:', validPassword);
+        
+        if (!validPassword) {
+          console.warn('[LOGIN] Invalid password for user:', username);
+          return res.status(401).json({ error: 'Invalid credentials' });
+        }
+        
+        const token = jwt.sign(
+          {
+            userId: user.user_id,
+            username: user.username,
+            role: user.role
+          },
+          JWT_SECRET,
+          { expiresIn: '24h' }
+        );
+        
+        console.log('[LOGIN] ✓ Login successful:', username);
+        
+        res.json({
+          token,
+          user: {
+            userId: user.user_id,
+            username: user.username,
+            email: user.email,
+            fullName: user.full_name,
+            role: user.role
+          }
+        });
+      } catch (bcryptErr) {
+        console.error('[LOGIN] Bcrypt error:', bcryptErr.message);
+        return res.status(500).json({ error: 'Login failed - password comparison error' });
+      }
+    });
   } catch (error) {
-    console.error('[DB] Menu item creation error:', error.message);
+    console.error('[LOGIN] Exception:', error.message);
     next(error);
   }
 });
 
-// Final corrected POST /api/menu route
-app.post('/api/menu', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, async (req, res, next) => {
-  try {
-    const { category_id, item_name, description, price, image_url, is_available } = req.body;
-    
-    // Convert empty string/undefined URL to NULL for DB insertion
-    const final_image_url = (image_url && image_url.trim().length > 0) ? image_url : null;
-
-    // DEBUG: Log the *final* value being inserted
-    console.log('[MENU POST] Final Image URL for DB:', final_image_url);
-    
-    const insertQuery = `
-      INSERT INTO menu_items (category_id, item_name, description, price, image_url, is_available, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, NOW())
-    `;
-    
-    // 1. Insert the new item
-    const [insertResult] = await db.query(insertQuery, [
-      category_id || null, 
-      item_name, 
-      description || null, 
-      price, 
-      final_image_url, 
-      is_available ? 1 : 0
-    ]);
-    
-    const newId = insertResult.insertId;
-    
-    // 2. Fetch the newly created item's complete data from the database
-    const fetchQuery = `
-      SELECT mi.*, c.category_name
-      FROM menu_items mi
-      LEFT JOIN categories c ON mi.category_id = c.category_id
-      WHERE mi.item_id = ?
-    `;
-    
-    const [rows] = await db.query(fetchQuery, [newId]); 
-    
-    if (rows.length === 0) {
-      console.error(`[DB] Failed to retrieve newly inserted item ID: ${newId}`);
-      return res.status(500).json({ error: 'Item created but failed to retrieve details.' });
+app.get('/api/auth/me', authenticateToken, (req, res, next) => {
+  const query = 'SELECT user_id, username, email, full_name, phone, role FROM users WHERE user_id = ?';
+  db.query(query, [req.user.userId], (err, results) => {
+    if (err) {
+      console.error('[DB] Profile fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch profile' });
     }
     
-    const newItem = rows[0];
-    
-    // 3. Emit the complete newItem object to clients
-    try {
-      io.to('admins').emit('menu:item:add', newItem);
-      io.to('customers').emit('menu:item:add', newItem);
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit menu:item:add');
-    }
-    
-    res.status(201).json({ message: 'Menu item added successfully', item: newItem });
-  } catch (error) {
-    console.error('[DB] Menu item creation error:', error.message);
-    next(error);
-  }
-});
-
-// FIX 5: Converted to async/await
-app.get('/api/auth/me', authenticateToken, async (req, res, next) => {
-  try {
-    const query = 'SELECT user_id, username, email, full_name, phone, role FROM users WHERE user_id = ?';
-    const [results] = await db.query(query, [req.user.userId]); // AWAIT
-
     if (results.length === 0) {
       return res.status(404).json({ error: 'User not found' });
     }
@@ -531,49 +560,7 @@ app.get('/api/auth/me', authenticateToken, async (req, res, next) => {
       phone: u.phone,
       role: u.role
     });
-  } catch (err) {
-    console.error('[DB] Profile fetch error:', err.message);
-    next(err);
-  }
-});
-// FIX 20: Add the missing POST /api/auth/login route
-app.post('/api/auth/login', authLimiter, validateLogin, handleValidationErrors, async (req, res, next) => {
-  try {
-    const { username, password } = req.body;
-    
-    // 1. Fetch user by username (FIX: Alias 'password' to 'password_hash')
-const [rows] = await db.query('SELECT user_id, username, password AS password_hash, role FROM users WHERE username = ?', [username]);
-    
-    if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-    
-    const user = rows[0];
-    
-    // 2. Compare password hash (assuming your column is named password_hash)
-    // If you use a different column name (e.g., just 'password'), update it here
-    const passwordMatch = await bcrypt.compare(password, user.password_hash);
-    
-    if (!passwordMatch) {
-      return res.status(401).json({ error: 'Invalid username or password' });
-    }
-    
-    // 3. Generate JWT token
-    const token = jwt.sign(
-      { userId: user.user_id, username: user.username, role: user.role },
-      JWT_SECRET,
-      { expiresIn: '1d' }
-    );
-    
-    res.json({
-      message: 'Login successful',
-      token,
-      user: { userId: user.user_id, username: user.username, role: user.role }
-    });
-  } catch (err) {
-    console.error('[DB] Login error:', err.message);
-    next(err);
-  }
+  });
 });
 
 app.post('/api/upload/image', authenticateToken, requireRole('admin'), upload.single('image'), (req, res, next) => {
@@ -601,264 +588,204 @@ app.post('/api/upload/image', authenticateToken, requireRole('admin'), upload.si
 });
 
 
-// FIX 6: Converted to async/await (The route that was causing the callback error)
-app.get('/api/menu', async (req, res, next) => {
-  try {
-    const query = `
-      SELECT mi.*, c.category_name
-      FROM menu_items mi
-      LEFT JOIN categories c ON mi.category_id = c.category_id
-      WHERE mi.is_available = TRUE
-      ORDER BY c.category_name, mi.item_name
-    `;
-    
-    const [results] = await db.query(query); // AWAIT
-
+app.get('/api/menu', (req, res, next) => {
+  const query = `
+    SELECT mi.*, c.category_name
+    FROM menu_items mi
+    LEFT JOIN categories c ON mi.category_id = c.category_id
+    WHERE mi.is_active = 1
+      AND c.is_active = 1
+    ORDER BY c.category_name, mi.item_name
+  `;
+  
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('[DB] Menu fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch menu items' });
+    }
     res.json(results);
-  } catch (err) {
-    console.error('[DB] Menu fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 7: Converted to async/await
-app.get('/api/menu/:id', async (req, res, next) => {
+app.get('/api/menu/:id', (req, res, next) => {
   const itemId = parseInt(req.params.id);
   if (isNaN(itemId)) {
     return res.status(400).json({ error: 'Invalid item ID' });
   }
   
-  try {
-    const query = 'SELECT * FROM menu_items WHERE item_id = ?';
-    const [results] = await db.query(query, [itemId]); // AWAIT
-    
+  const query = 'SELECT * FROM menu_items WHERE item_id = ? AND is_active = 1';
+  db.query(query, [itemId], (err, results) => {
+    if (err) {
+      console.error('[DB] Menu item fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch menu item' });
+    }
     if (results.length === 0) {
       return res.status(404).json({ error: 'Menu item not found' });
     }
     res.json(results[0]);
-  } catch (err) {
-    console.error('[DB] Menu item fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 8: Converted to async/await
-app.post('/api/menu', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, async (req, res, next) => {
+app.post('/api/menu', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, (req, res, next) => {
   try {
     const { category_id, item_name, description, price, image_url, is_available } = req.body;
     
-    const insertQuery = `
+    const query = `
       INSERT INTO menu_items (category_id, item_name, description, price, image_url, is_available, created_at)
       VALUES (?, ?, ?, ?, ?, ?, NOW())
     `;
     
-    const [insertResult] = await db.query(insertQuery, [category_id || null, item_name, description || null, price, image_url || null, is_available ? 1 : 0]); // AWAIT 1
-    
-    const newId = insertResult.insertId;
-    const fetchQuery = `
-      SELECT mi.*, c.category_name
-      FROM menu_items mi
-      LEFT JOIN categories c ON mi.category_id = c.category_id
-      WHERE mi.item_id = ?
-    `;
-    
-    const [rows] = await db.query(fetchQuery, [newId]); // AWAIT 2
-    const newItem = rows && rows[0] ? rows[0] : { item_id: newId, item_name, category_id, description, price, image_url, is_available: is_available ? 1 : 0 };
-    
-    try {
-      io.to('admins').emit('menu:item:add', newItem);
-      io.to('customers').emit('menu:item:add', newItem);
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit menu:item:add');
-    }
-    
-    res.status(201).json({ message: 'Menu item added successfully', itemId: newId });
+    db.query(query, [category_id || null, item_name, description || null, price, image_url || null, is_available ? 1 : 0], (err, result) => {
+      if (err) {
+        console.error('[DB] Menu item creation error:', err.message);
+        return res.status(500).json({ error: 'Failed to add menu item' });
+      }
+      
+      const newId = result.insertId;
+      const fetchQuery = `
+        SELECT mi.*, c.category_name
+        FROM menu_items mi
+        LEFT JOIN categories c ON mi.category_id = c.category_id
+        WHERE mi.item_id = ?
+      `;
+      
+      db.query(fetchQuery, [newId], (fErr, rows) => {
+        const newItem = rows && rows[0] ? rows[0] : { item_id: newId, item_name, category_id, description, price, image_url, is_available: 1 };
+        
+        try {
+          io.to('admins').emit('menu:item:add', newItem);
+          io.to('customers').emit('menu:item:add', newItem);
+        } catch (_e) {
+          console.warn('[SOCKET] Failed to emit menu:item:add');
+        }
+        
+        res.status(201).json({ message: 'Menu item added successfully', itemId: newId });
+      });
+    });
   } catch (error) {
-    console.error('[DB] Menu item creation error:', error.message);
     next(error);
   }
 });
 
-// FIX 9: Converted to async/await and improved update logic
-app.put('/api/menu/:id', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, async (req, res, next) => {
+app.put('/api/menu/:id', authenticateToken, requireRole('admin'), validateMenuItem, handleValidationErrors, (req, res, next) => {
   try {
     const itemId = parseInt(req.params.id);
     if (isNaN(itemId)) {
       return res.status(400).json({ error: 'Invalid item ID' });
     }
     
-    const { category_id, item_name, description, price, is_available, image_url } = req.body;
-    const safeAvailable = is_available !== undefined ? (is_available ? 1 : 0) : null;
+    const { category_id, item_name, description, price, is_available } = req.body;
+    const safeAvailable = is_available ? 1 : 0;
     
-    let updates = [];
-    let params = [];
-
-    if (category_id !== undefined) {
-        updates.push('category_id = ?');
-        params.push(category_id || null);
-    }
-    if (item_name !== undefined) {
-        updates.push('item_name = ?');
-        params.push(item_name);
-    }
-    if (description !== undefined) {
-        updates.push('description = ?');
-        params.push(description || null);
-    }
-    if (price !== undefined) {
-        updates.push('price = ?');
-        params.push(price);
-    }
-    if (safeAvailable !== null) {
-        updates.push('is_available = ?');
-        params.push(safeAvailable);
-    }
-    if (image_url !== undefined) {
-        updates.push('image_url = ?');
-        params.push(image_url || null);
-    }
-    
-    if (updates.length === 0) {
-        return res.status(400).json({ error: 'No valid fields to update' });
-    }
-
-    updates.push('updated_at = NOW()');
-    params.push(itemId);
-    
-    const updateQuery = `
+    const query = `
       UPDATE menu_items
-      SET ${updates.join(', ')}
+      SET category_id = ?, item_name = ?, description = ?, price = ?, is_available = ?, updated_at = NOW()
       WHERE item_id = ?
     `;
     
-    const [updateResult] = await db.query(updateQuery, params); // AWAIT 1
-    
-    if (updateResult.affectedRows === 0) {
-      return res.status(404).json({ error: 'Menu item not found' });
-    }
-    
-    const fetchQuery = `
-      SELECT mi.*, c.category_name
-      FROM menu_items mi
-      LEFT JOIN categories c ON mi.category_id = c.category_id
-      WHERE mi.item_id = ?
-    `;
-    
-    const [rows] = await db.query(fetchQuery, [itemId]); // AWAIT 2
-    const updated = rows && rows[0] ? rows[0] : { item_id: itemId, is_available: safeAvailable };
-    
-    try {
-      io.to('admins').emit('menu:item:update', updated);
-      io.to('customers').emit('menu:item:update', updated);
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit menu:item:update');
-    }
-    
-    res.json({ message: 'Menu item updated successfully', item: updated });
+    db.query(query, [category_id || null, item_name, description || null, price, safeAvailable, itemId], (err, result) => {
+      if (err) {
+        console.error('[DB] Menu item update error:', err.message);
+        return res.status(500).json({ error: 'Failed to update menu item' });
+      }
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ error: 'Menu item not found' });
+      }
+      
+      const fetchQuery = `
+        SELECT mi.*, c.category_name
+        FROM menu_items mi
+        LEFT JOIN categories c ON mi.category_id = c.category_id
+        WHERE mi.item_id = ?
+      `;
+      
+      db.query(fetchQuery, [itemId], (fErr, rows) => {
+        const updated = rows && rows[0] ? rows[0] : { item_id: itemId, is_available: safeAvailable };
+        
+        try {
+          io.to('admins').emit('menu:item:update', updated);
+          io.to('customers').emit('menu:item:update', updated);
+        } catch (_e) {
+          console.warn('[SOCKET] Failed to emit menu:item:update');
+        }
+        
+        res.json({ message: 'Menu item updated successfully', item: updated });
+      });
+    });
   } catch (error) {
-    console.error('[DB] Menu item update error:', error.message);
     next(error);
   }
 });
 
-// FIX 10: Final corrected DELETE route with transaction and async/await
 app.delete('/api/menu/:id', authenticateToken, requireRole('admin'), async (req, res, next) => {
   const itemId = parseInt(req.params.id);
+
   if (isNaN(itemId)) {
-    return res.status(400).json({ error: 'Invalid item ID' });
+      return res.status(400).json({ error: 'Invalid item ID' });
   }
 
-  let connection;
-  try {
-    // 1. Get a connection from the promise pool
-    connection = await db.getConnection();
-    await connection.beginTransaction();
+  
+  const updateQuery = 'UPDATE menu_items SET is_active = 0, updated_at = NOW() WHERE item_id = ?';
 
-    // 2. Delete dependent rows in order_items (resolves foreign key constraint)
-    const deleteOrderItemsQuery = 'DELETE FROM order_items WHERE item_id = ?';
-    const [orderItemsResult] = await connection.execute(deleteOrderItemsQuery, [itemId]);
-    console.log(`[DB] Deleted ${orderItemsResult.affectedRows} order item references for item ID ${itemId}.`);
+  db.query(updateQuery, [itemId], (err, result) => {
+      if (err) {
+          console.error('[DB] Menu item soft deletion error:', err.message);
+          // We use 500 here if the UPDATE query fails, but not for FK constraint issues
+          return res.status(500).json({ error: 'Failed to deactivate menu item' });
+      }
 
-    // 3. Delete the parent row in menu_items
-    const deleteMenuItemQuery = 'DELETE FROM menu_items WHERE item_id = ?';
-    const [menuItemResult] = await connection.execute(deleteMenuItemQuery, [itemId]);
+      if (result.affectedRows === 0) {
+          return res.status(404).json({ error: 'Menu item not found or already inactive' });
+      }
 
-    if (menuItemResult.affectedRows === 0) {
-      await connection.rollback();
-      return res.status(404).json({ error: 'Menu item not found' });
-    }
-
-    // 4. Commit the transaction
-    await connection.commit();
-
-    // 5. Handle Socket and Response
-    try {
-      io.to('admins').emit('menu:item:delete', { item_id: itemId });
-      io.to('customers').emit('menu:item:delete', { item_id: itemId });
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit menu:item:delete');
-    }
-
-    res.json({ message: 'Menu item deleted successfully' });
-
-  } catch (error) {
-    if (connection) {
-      // Rollback on any error, and catch rollback error to ensure main error is returned
-      await connection.rollback().catch(rollbackError => {
-        console.error('[DB] Rollback error:', rollbackError.message);
-      });
-    }
-    console.error('[DB] Menu item deletion error:', error.message, error.code);
-    next(error);
-
-  } finally {
-    if (connection) {
-      connection.release(); // Ensure connection is released
-    }
-  }
+      // Successfully "deleted" (deactivated)
+      res.status(200).json({ message: `Menu item ${itemId} successfully deactivated.` });
+  });
 });
 
-
-// FIX 11: Converted to async/await
-app.get('/api/categories', async (req, res, next) => {
-  try {
-    const query = 'SELECT * FROM categories WHERE is_active = TRUE ORDER BY category_name';
-    const [results] = await db.query(query);
+app.get('/api/categories', (req, res, next) => {
+  const query = 'SELECT * FROM categories WHERE is_active = TRUE ORDER BY category_name';
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('[DB] Categories fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch categories' });
+    }
     res.json(results);
-  } catch (err) {
-    console.error('[DB] Categories fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 12: Converted to async/await
-app.post('/api/categories', authenticateToken, requireRole('admin'), validateCategory, handleValidationErrors, async (req, res, next) => {
+app.post('/api/categories', authenticateToken, requireRole('admin'), validateCategory, handleValidationErrors, (req, res, next) => {
   try {
     const { category_name, is_active } = req.body;
     const active = is_active !== false ? 1 : 0;
     
-    const insertQuery = 'INSERT INTO categories (category_name, is_active, created_at) VALUES (?, ?, NOW())';
-    const [insertResult] = await db.query(insertQuery, [category_name, active]);
-
-    const newId = insertResult.insertId;
-    const [rows] = await db.query('SELECT * FROM categories WHERE category_id = ?', [newId]);
-    const cat = rows && rows[0] ? rows[0] : { category_id: newId, category_name, is_active: active };
-    
-    try {
-      io.to('admins').emit('category:add', cat);
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit category:add');
-    }
-    
-    res.status(201).json(cat);
+    const query = 'INSERT INTO categories (category_name, is_active, created_at) VALUES (?, ?, NOW())';
+    db.query(query, [category_name, active], (err, result) => {
+      if (err) {
+        console.error('[DB] Category creation error:', err.message);
+        return res.status(500).json({ error: 'Failed to create category' });
+      }
+      
+      const newId = result.insertId;
+      db.query('SELECT * FROM categories WHERE category_id = ?', [newId], (fErr, rows) => {
+        const cat = rows && rows[0] ? rows[0] : { category_id: newId, category_name, is_active: active };
+        
+        try {
+          io.to('admins').emit('category:add', cat);
+        } catch (_e) {
+          console.warn('[SOCKET] Failed to emit category:add');
+        }
+        
+        res.status(201).json(cat);
+      });
+    });
   } catch (error) {
-    console.error('[DB] Category creation error:', error.message);
     next(error);
   }
 });
 
-// FIX 13: Converted to async/await
-app.put('/api/categories/:id', authenticateToken, requireRole('admin'), validateCategory, handleValidationErrors, async (req, res, next) => {
+app.put('/api/categories/:id', authenticateToken, requireRole('admin'), validateCategory, handleValidationErrors, (req, res, next) => {
   try {
     const catId = parseInt(req.params.id);
     if (isNaN(catId)) {
@@ -873,190 +800,414 @@ app.put('/api/categories/:id', authenticateToken, requireRole('admin'), validate
       updates.push('category_name = ?');
       params.push(category_name.trim());
     }
+
+    let isStatusChange = false;
+    let newIsActiveStatus = null; 
+
     if (typeof is_active !== 'undefined') {
+      isStatusChange = true;
+      newIsActiveStatus = is_active ? 1 : 0;
       updates.push('is_active = ?');
-      params.push(is_active ? 1 : 0);
+      params.push(newIsActiveStatus);
     }
     
     if (updates.length === 0) {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
     
-    const query = `UPDATE categories SET ${updates.join(', ')}, updated_at = NOW() WHERE category_id = ?`;
-    const [updateResult] = await db.query(query, [...params, catId]); // AWAIT 1
+    const categoryUpdateQuery = `UPDATE categories SET ${updates.join(', ')}, updated_at = NOW() WHERE category_id = ?`;
 
-    if (updateResult.affectedRows === 0) {
-      return res.status(404).json({ error: 'Category not found' });
-    }
-    
-    const [rows] = await db.query('SELECT * FROM categories WHERE category_id = ?', [catId]); // AWAIT 2
-    const cat = rows && rows[0] ? rows[0] : null;
-    
-    try {
-      io.to('admins').emit('category:update', cat || { category_id: catId });
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit category:update');
-    }
-    
-    res.json(cat || { message: 'Category updated' });
-  } catch (error) {
-    console.error('[DB] Category update error:', error.message);
-    next(error);
-  }
-});
+    // Start database transaction
+    db.getConnection((err, connection) => {
+      if (err) {
+        console.error('[DB] Connection error:', err.message);
+        return res.status(500).json({ error: 'Database connection failed' });
+      }
 
-// FIX 14: Converted to async/await transaction structure
-app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter, async (req, res, next) => {
-  
-  if (!req.user) {
-    return res.status(401).json({ error: 'Authentication required' });
-  }
-  
-  const { items, payment_method, special_instructions, order_type, scheduled_at } = req.body;
-  const userId = req.user.userId;
-  
-  let finalScheduledTime = null;
-  const finalOrderType = order_type === 'scheduled' ? 'scheduled' : 'asap';
+      connection.beginTransaction((err) => {
+        if (err) {
+          connection.release();
+          console.error('[DB] Transaction start error:', err.message);
+          return res.status(500).json({ error: 'Transaction failed' });
+        }
 
-  if (finalOrderType === 'scheduled') {
-    if (!scheduled_at) {
-      return res.status(400).json({ error: 'Scheduled time is required for scheduled orders.' });
-    }
-    
-    const orderDate = new Date(scheduled_at);
-    const now = new Date();
-    
-    if (isNaN(orderDate.getTime())) {
-      return res.status(400).json({ error: 'Invalid date format for scheduled time.' });
-    }
+        // 1. Update the category itself
+        connection.query(categoryUpdateQuery, [...params, catId], (err, result) => {
+          if (err) {
+            return connection.rollback(() => {
+              connection.release();
+              console.error('[DB] Category update error:', err.message);
+              res.status(500).json({ error: 'Failed to update category' });
+            });
+          }
+          
+          if (result.affectedRows === 0) {
+            return connection.rollback(() => {
+              connection.release();
+              res.status(404).json({ error: 'Category not found' });
+            });
+          }
 
-    if (orderDate <= now) {
-       return res.status(400).json({ error: 'Scheduled time must be in the future.' });
-    }
-    
-    finalScheduledTime = new Date(scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
-  }
-  
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ error: 'Order must contain at least one item' });
-  }
-  
-  if (!payment_method || typeof payment_method !== 'string') {
-    return res.status(400).json({ error: 'Payment method is required' });
-  }
-  
-  for (const item of items) {
-    if (!Number.isInteger(item.item_id) || !Number.isInteger(item.quantity) || !item.price) {
-      return res.status(400).json({ error: 'Invalid item data' });
-    }
-    if (item.quantity < 1) {
-      return res.status(400).json({ error: 'Item quantity must be at least 1' });
-    }
-  }
-  
-  const orderNumber = 'ORD' + Date.now();
-  const total = items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  
-  let connection;
-  try {
-    // 1. Get connection and begin transaction
-    connection = await db.getConnection();
-    await connection.beginTransaction();
-    
-    const orderQuery = `
-      INSERT INTO orders (user_id, order_number, total_amount, payment_method, special_instructions, status, payment_status, order_type, scheduled_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
-    `;
-    
-    // 2. Insert order
-    const [orderResult] = await connection.query(orderQuery, [userId, orderNumber, total, payment_method, special_instructions || null, ORDER_STATUS.PENDING, PAYMENT_STATUS.PENDING, finalOrderType, finalScheduledTime]);
-    
-    const orderId = orderResult.insertId;
-    const orderItemsQuery = 'INSERT INTO order_items (order_id, item_id, quantity, unit_price, subtotal) VALUES ?';
-    const orderItemsData = items.map(item => [orderId, item.item_id, item.quantity, item.price, item.price * item.quantity]);
-    
-    // 3. Insert order items
-    await connection.query(orderItemsQuery, [orderItemsData]);
-    
-    // 4. Commit the transaction
-    await connection.commit();
-    
-    // 5. Emit socket event
-    try {
-      io.to('admins').emit('order:new', {
-        orderId,
-        orderNumber,
-        totalAmount: total,
-        userId,
-        username: req.user.username,
-        orderType: finalOrderType,
-        scheduledAt: finalScheduledTime,
-        at: Date.now()
+          let cascadeQuery = null;
+          let successMessage = 'Category updated successfully';
+          
+          if (isStatusChange) {
+            if (newIsActiveStatus === 0) {
+              // Deactivation: Cascade to menu items
+              cascadeQuery = 'UPDATE menu_items SET is_active = 0, is_available = 0, updated_at = NOW() WHERE category_id = ?';
+              successMessage = 'Category and associated items deactivated successfully';
+            } else {
+              // Activation: Cascade to menu items
+              // Set both is_active and is_available to 1 to restore menu visibility.
+              cascadeQuery = 'UPDATE menu_items SET is_active = 1, is_available = 1, updated_at = NOW() WHERE category_id = ?';
+              successMessage = 'Category activated, associated items re-activated successfully';
+            }
+          }
+
+          // 2. Cascade update (if status was changed)
+          if (cascadeQuery) {
+            connection.query(cascadeQuery, [catId], (err, menuResult) => {
+              if (err) {
+                return connection.rollback(() => {
+                  connection.release();
+                  console.error('[DB] Menu item cascade error:', err.message);
+                  res.status(500).json({ error: 'Failed to update associated menu items' });
+                });
+              }
+
+              // 3. Commit transaction
+              connection.commit((err) => {
+                if (err) {
+                  return connection.rollback(() => {
+                    connection.release();
+                    console.error('[DB] Transaction commit error:', err.message);
+                    res.status(500).json({ error: 'Failed to complete category update transaction' });
+                  });
+                }
+                
+                connection.release();
+                
+                // Fetch and emit update
+                db.query('SELECT * FROM categories WHERE category_id = ?', [catId], (fErr, rows) => {
+                  const cat = rows && rows[0] ? rows[0] : null;
+                  
+                  try {
+                    io.to('admins').emit('category:update', cat || { category_id: catId, is_active: newIsActiveStatus });
+                    io.to('customers').emit('menu:full:refresh'); 
+                  } catch (_e) {
+                    console.warn('[SOCKET] Failed to emit category update or menu refresh');
+                  }
+                  
+                  res.json(cat || { message: successMessage });
+                });
+              });
+            });
+
+          } else {
+            // 2b. Only category_name was updated (no status change)
+            connection.commit((err) => {
+              if (err) {
+                return connection.rollback(() => {
+                  connection.release();
+                  console.error('[DB] Transaction commit error:', err.message);
+                  res.status(500).json({ error: 'Failed to complete category update transaction' });
+                });
+              }
+              
+              connection.release();
+              
+              db.query('SELECT * FROM categories WHERE category_id = ?', [catId], (fErr, rows) => {
+                const cat = rows && rows[0] ? rows[0] : null;
+                
+                try {
+                  io.to('admins').emit('category:update', cat || { category_id: catId });
+                } catch (_e) {
+                  console.warn('[SOCKET] Failed to emit category update');
+                }
+                
+                res.json(cat || { message: successMessage });
+              });
+            });
+          }
+        });
       });
-    } catch (_e) {
-      console.warn('[SOCKET] Failed to emit order:new');
-    }
-    
-    console.log(`[ORDER] New order ${orderNumber} created by user ${userId}`);
-    res.status(201).json({
-      message: 'Order placed successfully',
-      orderId,
-      orderNumber,
-      totalAmount: total
     });
-    
   } catch (error) {
-    if (connection) {
-      // Rollback on any error
-      await connection.rollback().catch(rollbackError => {
-        console.error('[DB] Rollback error:', rollbackError.message);
-      });
-    }
-    console.error('[DB] Order creation error:', error.message);
     next(error);
-
-  } finally {
-    if (connection) {
-      connection.release();
-    }
   }
 });
 
-
-// FIX 15: Converted to async/await
-app.get('/api/orders/my-orders', authenticateToken, requireRole('customer'), async (req, res, next) => {
+app.post('/api/orders', authenticateToken, requireRole('customer'), orderLimiter, (req, res, next) => {
   try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    
+    const { items, payment_method, special_instructions, order_type, scheduled_at } = req.body;
     const userId = req.user.userId;
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = 20;
-    const offset = (page - 1) * limit;
     
-    const query = `
-      SELECT o.*, COUNT(oi.order_item_id) as item_count
-      FROM orders o
-      LEFT JOIN order_items oi ON o.order_id = oi.order_id
-      WHERE o.user_id = ?
-      GROUP BY o.order_id
-      ORDER BY o.created_at DESC
-      LIMIT ? OFFSET ?
-    `;
-    
-    const [results] = await db.query(query, [userId, limit, offset]);
+    let finalScheduledTime = null;
+    const finalOrderType = order_type === 'scheduled' ? 'scheduled' : 'asap';
 
+    // (Existing scheduled time validation logic remains here)
+    if (finalOrderType === 'scheduled') {
+      if (!scheduled_at) {
+        return res.status(400).json({ error: 'Scheduled time is required for scheduled orders.' });
+      }
+      
+      const orderDate = new Date(scheduled_at);
+      const now = new Date();
+      
+      if (isNaN(orderDate.getTime()) || orderDate <= now) {
+          return res.status(400).json({ error: 'Invalid or past scheduled time.' });
+      }
+      
+      finalScheduledTime = new Date(scheduled_at).toISOString().slice(0, 19).replace('T', ' ');
+    }
+    
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ error: 'Order must contain at least one item' });
+    }
+    
+    if (!payment_method || typeof payment_method !== 'string') {
+      return res.status(400).json({ error: 'Payment method is required' });
+    }
+    
+    // Only validate item structure (ID, quantity), price is ignored/overwritten later
+    for (const item of items) {
+      if (!Number.isInteger(item.item_id) || !Number.isInteger(item.quantity)) {
+        // Removed item.price check as it's unreliable client data
+        return res.status(400).json({ error: 'Invalid item data (item ID or quantity missing/invalid).' });
+      }
+      if (item.quantity < 1) {
+        return res.status(400).json({ error: 'Item quantity must be at least 1' });
+      }
+    }
+    
+    const orderNumber = 'ORD' + Date.now();
+    // const total = items.reduce((sum, item) => sum + (item.price * item.quantity), 0); // REMOVED - Total will be calculated based on DB price
+
+    db.getConnection((err, connection) => {
+      if (err) {
+        console.error('[DB] Connection error:', err.message);
+        return res.status(500).json({ error: 'Database connection failed' });
+      }
+      
+      connection.beginTransaction((err) => {
+        if (err) {
+          connection.release();
+          console.error('[DB] Transaction start error:', err.message);
+          return res.status(500).json({ error: 'Transaction failed' });
+        }
+
+        // --- 🎯 STEP 1: Fetch and Validate Item Details from DB ---
+        const itemIds = items.map(item => item.item_id);
+        const itemDetailsQuery = `
+          SELECT item_id, price, is_active, item_name 
+          FROM menu_items 
+          WHERE item_id IN (?)
+        `;
+
+        connection.query(itemDetailsQuery, [itemIds], (err, dbItems) => {
+          if (err) {
+            return connection.rollback(() => {
+              connection.release();
+              console.error('[DB] Item details fetch error:', err.message);
+              return res.status(500).json({ error: 'Failed to validate order items' });
+            });
+          }
+
+          let finalTotal = 0;
+          const finalOrderItemsData = [];
+          const dbItemMap = new Map(dbItems.map(item => [item.item_id, item]));
+
+          for (const item of items) {
+            const dbItem = dbItemMap.get(item.item_id);
+
+            // 1. Check for deletion/existence
+            if (!dbItem || dbItem.is_active === 0) {
+              return connection.rollback(() => {
+                connection.release();
+                // Return a specific error message for the soft-deleted item
+                return res.status(400).json({ 
+                  error: `Item "${dbItem?.item_name || item.item_id}" is no longer available. Please remove it from your cart.` 
+                });
+              });
+            }
+
+            // 2. Use database price (unitPrice) and calculate new total
+            const unitPrice = dbItem.price;
+            const subtotal = unitPrice * item.quantity;
+            finalTotal += subtotal;
+
+            finalOrderItemsData.push([
+              0, // Placeholder for orderId (updated later)
+              item.item_id, 
+              item.quantity, 
+              unitPrice, // Use DB price
+              subtotal
+            ]);
+          }
+          // --- 🎯 END STEP 1: Validation and Total Calculation Complete ---
+
+
+          // --- 🎯 STEP 2: Insert Order (Now using validated finalTotal) ---
+          const orderQuery = `
+            INSERT INTO orders (user_id, order_number, total_amount, payment_method, special_instructions, status, payment_status, order_type, scheduled_at, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          `;
+          
+          connection.query(orderQuery, [userId, orderNumber, finalTotal, payment_method, special_instructions || null, ORDER_STATUS.PENDING, PAYMENT_STATUS.PENDING, finalOrderType, finalScheduledTime], (err, orderResult) => {
+            if (err) {
+              return connection.rollback(() => {
+                connection.release();
+                console.error('[DB] Order creation error:', err.message);
+                res.status(500).json({ error: 'Failed to create order' });
+              });
+            }
+            
+            const orderId = orderResult.insertId;
+            
+            // 🎯 Update orderId placeholder in the final order items data
+            const orderItemsDataForInsert = finalOrderItemsData.map(data => {
+              data[0] = orderId; // Set the first element (order_id) to the new orderId
+              return data;
+            });
+
+            // --- 🎯 STEP 3: Insert Order Items (Using server-validated data) ---
+            const orderItemsQuery = 'INSERT INTO order_items (order_id, item_id, quantity, unit_price, subtotal) VALUES ?';
+            
+            connection.query(orderItemsQuery, [orderItemsDataForInsert], (err) => {
+              if (err) {
+                return connection.rollback(() => {
+                  connection.release();
+                  console.error('[DB] Order items creation error:', err.message);
+                  // This is likely a foreign key error if a soft-deleted item somehow slipped through
+                  res.status(500).json({ error: 'Failed to add order items (item reference error)' });
+                });
+              }
+              
+              // --- 🎯 STEP 4: Commit Transaction ---
+              connection.commit((err) => {
+                if (err) {
+                  return connection.rollback(() => {
+                    connection.release();
+                    console.error('[DB] Transaction commit error:', err.message);
+                    res.status(500).json({ error: 'Failed to complete order' });
+                  });
+                }
+                
+                connection.release();
+                
+                try {
+                  io.to('admins').emit('order:new', {
+                    orderId,
+                    orderNumber,
+                    totalAmount: finalTotal, // Use finalTotal
+                    userId,
+                    username: req.user.username,
+                    orderType: finalOrderType,
+                    scheduledAt: finalScheduledTime,
+                    at: Date.now()
+                  });
+                } catch (_e) {
+                  console.warn('[SOCKET] Failed to emit order:new');
+                }
+                
+                console.log(`[ORDER] New order ${orderNumber} created by user ${userId}`);
+                res.status(201).json({
+                  message: 'Order placed successfully',
+                  orderId,
+                  orderNumber,
+                  totalAmount: finalTotal
+                });
+              });
+            });
+          });
+        });
+      });
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/orders/my-orders', authenticateToken, requireRole('customer'), (req, res, next) => {
+  const userId = req.user.userId;
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = 20;
+  const offset = (page - 1) * limit;
+  
+  const query = `
+    SELECT o.*, COUNT(oi.order_item_id) as item_count
+    FROM orders o
+    LEFT JOIN order_items oi ON o.order_id = oi.order_id
+    WHERE o.user_id = ?
+    GROUP BY o.order_id
+    ORDER BY o.created_at DESC
+    LIMIT ? OFFSET ?
+  `;
+  
+  db.query(query, [userId, limit, offset], (err, results) => {
+    if (err) {
+      console.error('[DB] User orders fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch orders' });
+    }
     res.json({
       orders: results,
       page,
       limit,
       count: results.length
     });
-  } catch (err) {
-    console.error('[DB] User orders fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 16: Converted to async/await
-app.get('/api/orders/:id', authenticateToken, requireRole('customer'), async (req, res, next) => {
+// server.js (Add this route in the Order API section)
+
+app.get('/api/orders', authenticateToken, requireRole('customer'), (req, res, next) => {
+  const userId = req.user.userId;
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 20;
+  const offset = (page - 1) * limit;
+
+  const countQuery = `SELECT COUNT(order_id) as total_count FROM orders WHERE user_id = ?`;
+  
+  // 1. Get the total count of orders for this user
+  db.query(countQuery, [userId], (err, countRows) => {
+    if (err) {
+      console.error('[DB] User orders count error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch orders count' });
+    }
+    const totalCount = countRows[0]?.total_count || 0;
+
+    const ordersQuery = `
+      SELECT o.*, SUM(oi.quantity) AS item_count
+      FROM orders o
+      LEFT JOIN order_items oi ON o.order_id = oi.order_id
+      WHERE o.user_id = ? 
+      GROUP BY o.order_id
+      ORDER BY o.created_at DESC
+      LIMIT ? OFFSET ?
+    `;
+
+    // 2. Fetch the paginated list of orders
+    db.query(ordersQuery, [userId, limit, offset], (err, ordersList) => {
+      if (err) {
+        console.error('[DB] User orders fetch error:', err.message);
+        return res.status(500).json({ error: 'Failed to fetch orders' });
+      }
+
+      res.json({
+        orders: ordersList,
+        page: page,
+        limit: limit,
+        count: totalCount
+      });
+    });
+  });
+});
+
+app.get('/api/orders/:id', authenticateToken, requireRole('customer'), (req, res, next) => {
   const orderId = parseInt(req.params.id);
   const userId = req.user.userId;
   
@@ -1064,16 +1215,19 @@ app.get('/api/orders/:id', authenticateToken, requireRole('customer'), async (re
     return res.status(400).json({ error: 'Invalid order ID' });
   }
   
-  try {
-    const query = `
-      SELECT o.*, oi.order_item_id, oi.item_id, oi.quantity, oi.unit_price, oi.subtotal, mi.item_name, mi.image_url
-      FROM orders o
-      LEFT JOIN order_items oi ON o.order_id = oi.order_id
-      LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
-      WHERE o.order_id = ? AND o.user_id = ?
-    `;
-    
-    const [results] = await db.query(query, [orderId, userId]);
+  const query = `
+    SELECT o.*, oi.order_item_id, oi.item_id, oi.quantity, oi.unit_price, oi.subtotal, mi.item_name, mi.image_url
+    FROM orders o
+    LEFT JOIN order_items oi ON o.order_id = oi.order_id
+    LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
+    WHERE o.order_id = ? AND o.user_id = ?
+  `;
+  
+  db.query(query, [orderId, userId], (err, results) => {
+    if (err) {
+      console.error('[DB] Order details fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch order details' });
+    }
     
     if (results.length === 0) {
       return res.status(404).json({ error: 'Order not found' });
@@ -1103,56 +1257,65 @@ app.get('/api/orders/:id', authenticateToken, requireRole('customer'), async (re
       createdAt: orderData.created_at,
       items
     });
-  } catch (err) {
-    console.error('[DB] Order details fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 17: Converted to async/await
-app.get('/api/admin/menu/order-counts', authenticateToken, requireRole('admin'), async (req, res, next) => {
-  try {
-    const query = `
-      SELECT 
-        mi.item_id,
-        mi.item_name,
-        mi.image_url,
-        c.category_name,
-        SUM(oi.quantity) AS total_quantity_ordered
-      FROM menu_items mi
-      LEFT JOIN order_items oi ON mi.item_id = oi.item_id
-      LEFT JOIN categories c ON mi.category_id = c.category_id
-      GROUP BY mi.item_id, mi.item_name, mi.image_url, c.category_name
-      ORDER BY total_quantity_ordered DESC, mi.item_name ASC
-    `;
+app.get('/api/admin/categories', authenticateToken, requireRole('admin'), (req, res, next) => {
+  const query = 'SELECT * FROM categories ORDER BY category_name ASC'; 
 
-    const [results] = await db.query(query);
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('[DB] Failed to fetch admin categories:', err.message);
+      return res.status(500).json({ error: 'Failed to retrieve categories from database' });
+    }
+    res.json(results); 
+  });
+});
 
+app.get('/api/admin/menu/order-counts', authenticateToken, requireRole('admin'), (req, res, next) => {
+  const query = `
+    SELECT 
+      mi.item_id,
+      mi.item_name,
+      mi.image_url,
+      c.category_name,
+      SUM(oi.quantity) AS total_quantity_ordered
+    FROM menu_items mi
+    LEFT JOIN order_items oi ON mi.item_id = oi.item_id
+    LEFT JOIN categories c ON mi.category_id = c.category_id
+    GROUP BY mi.item_id, mi.item_name, mi.image_url, c.category_name
+    ORDER BY total_quantity_ordered DESC, mi.item_name ASC
+  `;
+
+  db.query(query, (err, results) => {
+    if (err) {
+      console.error('[DB] Item order counts fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch item order counts' });
+    }
     res.json(results);
-  } catch (err) {
-    console.error('[DB] Item order counts fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 18: Converted to async/await
-app.get('/api/admin/orders', authenticateToken, requireRole('admin'), async (req, res, next) => {
-  try {
-    const page = Math.max(1, parseInt(req.query.page) || 1);
-    const limit = 20;
-    const offset = (page - 1) * limit;
-    
-    const query = `
-      SELECT o.order_id, o.order_number, o.total_amount, o.payment_method, o.status, o.payment_status, o.order_type, o.scheduled_at, o.created_at, u.user_id, u.username, u.full_name, COUNT(oi.order_item_id) AS item_count
-      FROM orders o
-      LEFT JOIN users u ON o.user_id = u.user_id
-      LEFT JOIN order_items oi ON o.order_id = oi.order_id
-      GROUP BY o.order_id
-      ORDER BY o.created_at DESC
-      LIMIT ? OFFSET ?
-    `;
-    
-    const [results] = await db.query(query, [limit, offset]);
+app.get('/api/admin/orders', authenticateToken, requireRole('admin'), (req, res, next) => {
+  const page = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = 20;
+  const offset = (page - 1) * limit;
+  
+  const query = `
+    SELECT o.order_id, o.order_number, o.total_amount, o.payment_method, o.status, o.payment_status, o.order_type, o.scheduled_at, o.created_at, u.user_id, u.username, u.full_name, COUNT(oi.order_item_id) AS item_count
+    FROM orders o
+    LEFT JOIN users u ON o.user_id = u.user_id
+    LEFT JOIN order_items oi ON o.order_id = oi.order_id
+    GROUP BY o.order_id
+    ORDER BY o.created_at DESC
+    LIMIT ? OFFSET ?
+  `;
+  
+  db.query(query, [limit, offset], (err, results) => {
+    if (err) {
+      console.error('[DB] Admin orders fetch error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch orders' });
+    }
     
     res.json({
       orders: results,
@@ -1160,56 +1323,55 @@ app.get('/api/admin/orders', authenticateToken, requireRole('admin'), async (req
       limit,
       count: results.length
     });
-  } catch (err) {
-    console.error('[DB] Admin orders fetch error:', err.message);
-    next(err);
-  }
+  });
 });
 
-// FIX 19: Converted to async/await
-app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), async (req, res, next) => {
+app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), (req, res, next) => {
   const orderId = parseInt(req.params.id);
   
   if (isNaN(orderId)) {
     return res.status(400).json({ error: 'Invalid order ID' });
   }
   
-  try {
-    const query = `
-      SELECT 
-        o.order_id,
-        o.order_number,
-        o.total_amount,
-        o.payment_method,
-        o.status,
-        o.payment_status,
-        o.order_type,
-        o.scheduled_at,
-        o.special_instructions,
-        o.created_at,
-        o.updated_at,
-        u.user_id,
-        u.username,
-        u.full_name,
-        u.email,
-        u.phone,
-        oi.order_item_id,
-        oi.item_id,
-        oi.quantity,
-        oi.unit_price,
-        oi.subtotal,
-        COALESCE(oi.item_name_snapshot, mi.item_name) AS item_name, 
-        mi.image_url,
-        mi.description
-      FROM orders o
-      LEFT JOIN users u ON o.user_id = u.user_id
-      LEFT JOIN order_items oi ON o.order_id = oi.order_id
-      LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
-      WHERE o.order_id = ?
-    `;
+  const query = `
+    SELECT 
+      o.order_id,
+      o.order_number,
+      o.total_amount,
+      o.payment_method,
+      o.status,
+      o.payment_status,
+      o.order_type,
+      o.scheduled_at,
+      o.special_instructions,
+      o.created_at,
+      o.updated_at,
+      u.user_id,
+      u.username,
+      u.full_name,
+      u.email,
+      u.phone,
+      oi.order_item_id,
+      oi.item_id,
+      oi.quantity,
+      oi.unit_price,
+      oi.subtotal,
+      COALESCE(oi.item_name_snapshot, mi.item_name) AS item_name, 
+      mi.image_url,
+      mi.description
+    FROM orders o
+    LEFT JOIN users u ON o.user_id = u.user_id
+    LEFT JOIN order_items oi ON o.order_id = oi.order_id
+    LEFT JOIN menu_items mi ON oi.item_id = mi.item_id
+    WHERE o.order_id = ?
+  `;
+  
+  db.query(query, [orderId], (err, results) => {
+    if (err) {
+      console.error('[DB] Admin order details error:', err.message);
+      return res.status(500).json({ error: 'Failed to fetch order details' });
+    }
     
-    const [results] = await db.query(query, [orderId]);
-
     if (results.length === 0) {
       return res.status(404).json({ error: 'Order not found' });
     }
@@ -1260,10 +1422,101 @@ app.get('/api/admin/orders/:id', authenticateToken, requireRole('admin'), async 
       item_count: itemCount,
       items: items
     });
-  } catch (err) {
-    console.error('[DB] Admin order details error:', err.message);
-    next(err);
+  });
+});
+
+// New Route to Update Order Status (including payment_status) - Corrected Version
+app.put('/api/admin/orders/:id', authenticateToken, requireRole('admin'), async (req, res, next) => {
+  const orderId = parseInt(req.params.id);
+  const { status, payment_status } = req.body;
+
+  if (isNaN(orderId)) {
+    return res.status(400).json({ error: 'Invalid order ID' });
   }
+
+  const updates = [];
+  const values = [];
+
+  // Use the global constants for validation
+  if (status && [ORDER_STATUS.PENDING, ORDER_STATUS.CONFIRMED, ORDER_STATUS.PREPARING, ORDER_STATUS.READY, ORDER_STATUS.COMPLETED, ORDER_STATUS.CANCELLED].includes(status)) {
+    updates.push('status = ?');
+    values.push(status);
+  }
+
+  if (payment_status && [PAYMENT_STATUS.PENDING, PAYMENT_STATUS.PAID, PAYMENT_STATUS.REFUNDED].includes(payment_status)) {
+    updates.push('payment_status = ?');
+    values.push(payment_status);
+  }
+
+  if (updates.length === 0) {
+    return res.status(400).json({ error: 'No valid fields provided for update' });
+  }
+
+  const query = `UPDATE orders SET ${updates.join(', ')}, updated_at = NOW() WHERE order_id = ?`;
+  values.push(orderId);
+
+  db.query(query, values, (err, result) => {
+    if (err) {
+      console.error('[DB] Admin order update error:', err.message);
+      return res.status(500).json({ error: 'Failed to update order' });
+    }
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    // --- CRITICAL FIX: Fetch the full, updated order data before emitting ---
+    const fetchQuery = `
+      SELECT 
+        o.*, 
+        u.username,
+        u.email,
+        u.full_name
+      FROM orders o
+      JOIN users u ON o.user_id = u.user_id
+      WHERE o.order_id = ?
+    `;
+
+    db.query(fetchQuery, [orderId], (fetchErr, fetchResults) => {
+        if (fetchErr || fetchResults.length === 0) {
+            console.error('[DB] Failed to fetch updated order for socket:', fetchErr?.message || 'Not found');
+            const fallbackData = { order_id: orderId, status: status || req.body.status, payment_status: payment_status || req.body.payment_status };
+            io.to('admins').emit('order:update', fallbackData);
+            return res.json(fallbackData); 
+        }
+
+        const updatedOrderData = fetchResults[0];
+
+        // Format the data to match the frontend's expected order structure
+        const socketData = {
+            order_id: updatedOrderData.order_id,
+            order_number: updatedOrderData.order_number,
+            user_id: updatedOrderData.user_id,
+            username: updatedOrderData.username,
+            full_name: updatedOrderData.full_name,
+            total_amount: updatedOrderData.total_amount,
+            status: updatedOrderData.status,
+            payment_status: updatedOrderData.payment_status,
+            order_type: updatedOrderData.order_type,
+            scheduled_at: updatedOrderData.scheduled_at,
+            created_at: updatedOrderData.created_at, // CRITICAL: This was missing previously
+            email: updatedOrderData.email,
+        };
+
+        // Emit socket event with complete order data
+        try {
+            io.to('admins').emit('order:update', socketData);
+            if (status) {
+               io.to(`user:${socketData.user_id}`).emit('order:update', socketData);
+            }
+        } catch (_e) {
+            console.warn('[SOCKET] Failed to emit complete order:update');
+        }
+
+        
+        res.json(socketData);
+    });
+  });
 });
 
 app.get('/api/health', (req, res) => {
@@ -1275,7 +1528,6 @@ app.use((req, res) => {
 });
 
 app.use(handleError);
-
 
 const PORT = process.env.PORT || 5000;
 http.listen(PORT, () => {

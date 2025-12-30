@@ -15,7 +15,7 @@
 .menu-header h1 {
   font-size: 48px;
   font-weight: 700;
-  background: linear-gradient(135deg, #ffb347 0%, #ff7746 100%);
+  background: linear-gradient(135deg, #FF9900 0%, #FF6600 100%);
 
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -74,14 +74,14 @@
 }
 
 .category-filters button:hover {
-  border-color: #667eea;
-  color: #667eea;
+  border-color: #da471e;
+  color: #ce730b;
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(102, 126, 234, 0.2);
 }
 
 .category-filters button.active {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #FF9900 0%, #FF6600 100%);
   color: white;
   border-color: transparent;
   box-shadow: 0 4px 15px rgba(102, 126, 234, 0.3);

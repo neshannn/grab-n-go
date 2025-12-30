@@ -18,7 +18,6 @@ function Register() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
   const { showToast } = useToast();
-  // State is initialized based on URL parameter
   const [selectedRole, setSelectedRole] = useState(role === 'admin' ? 'admin' : 'customer');
   const isAdmin = selectedRole === 'admin';
 
@@ -47,8 +46,6 @@ function Register() {
     setLoading(true);
 
     try {
-      // The correct role (from selectedRole state) is passed here.
-      // If the checkbox is checked, 'admin' is sent.
       await authAPI.register({
         username: formData.username,
         email: formData.email,
@@ -73,7 +70,7 @@ function Register() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-500 via-purple-600 to-primary-700 flex items-center justify-center px-4 py-12">
+    <div className="min-h-screen bg-gradient-to-br from-primary-500 via-purple-600 to-primary-700 flex items-center justify-center px-4 py-12 font-sans">
       <div className="max-w-md w-full">
         <button
           onClick={() => navigate('/')}
@@ -98,7 +95,7 @@ function Register() {
                 </svg>
               )}
             </div>
-            <h2 className="text-3xl font-bold text-gray-900 mb-2">
+            <h2 className="text-3xl font-bold text-gray-900 mb-2 font-inter">
               {isAdmin ? 'Admin Registration' : 'Customer Registration'}
             </h2>
             <p className="text-gray-600">
@@ -127,7 +124,7 @@ function Register() {
                 value={formData.full_name}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                 placeholder="John Doe"
               />
             </div>
@@ -140,7 +137,7 @@ function Register() {
                 value={formData.username}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                 placeholder="johndoe"
               />
             </div>
@@ -153,7 +150,7 @@ function Register() {
                 value={formData.email}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                 placeholder="john@example.com"
               />
             </div>
@@ -165,7 +162,7 @@ function Register() {
                 name="phone"
                 value={formData.phone}
                 onChange={handleChange}
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                 placeholder="1234567890"
               />
             </div>
@@ -178,7 +175,7 @@ function Register() {
                 value={formData.password}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                 placeholder="••••••••"
               />
             </div>
@@ -191,18 +188,18 @@ function Register() {
                 value={formData.confirmPassword}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
                 placeholder="••••••••"
               />
             </div>
-            {/* FIX: Disable checkbox if 'admin' role is passed in URL, locking the role */}
+            
             <div className="flex items-center">
               <input
                 type="checkbox"
                 checked={selectedRole === 'admin'}
                 onChange={(e) => setSelectedRole(e.target.checked ? 'admin' : 'customer')}
                 className="mr-2"
-                disabled={role === 'admin'} // <--- The Fix
+                disabled={role === 'admin'}
               />
               <label className="block text-sm font-medium text-gray-700">
                 Click here to register as Admin

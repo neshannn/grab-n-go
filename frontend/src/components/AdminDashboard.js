@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { menuAPI, categoryAPI, adminAPI } from '../services/api';
 import { getSocket } from '../services/realtime';
 
@@ -69,39 +69,52 @@ function AdminDashboard() {
   const [orders, setOrders] = useState([]);
   const [itemOrderCounts, setItemOrderCounts] = useState([]); // <-- NEW STATE
   const [loading, setLoading] = useState(false);
- 
-  useEffect(() => {
-    const loadData = async () => {
-      setLoading(true);
-      try {
-        if (activeTab === 'menu' || activeTab === 'overview') {
-          const [menuRes, catRes] = await Promise.all([
-            menuAPI.getAllItems(),
-            categoryAPI.getAllCategories()
-          ]);
-          setMenuItems(Array.isArray(menuRes.data) ? menuRes.data : []);
-          setCategories(Array.isArray(catRes.data) ? catRes.data : []);
-        }
-        
-        if (activeTab === 'orders' || activeTab === 'overview') {
-          const [ordersRes, countsRes] = await Promise.all([
-            adminAPI.getAllOrders(1),
-            adminAPI.getItemOrderCounts(),
-          ]);
 
-          const ordersList = ordersRes.data?.orders || [];
-          setOrders(Array.isArray(ordersList) ? ordersList : []);
-          setItemOrderCounts(countsRes.data || []);
-        }
-      } catch (err) {
-        console.error('Failed to load data:', err);
-      } finally {
-        setLoading(false);
-      }
-    };
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+        const shouldFetchMenuData = activeTab === 'menu' || activeTab === 'overview' || activeTab === 'categories';
+        const shouldFetchOrderData = activeTab === 'orders' || activeTab === 'overview';
 
-    loadData();
+        const promises = [];
+
+        if (shouldFetchMenuData) {
+            promises.push(menuAPI.getAllItems());
+            promises.push(categoryAPI.getAllAdminCategories()); 
+        }
+
+        if (shouldFetchOrderData) {
+            promises.push(adminAPI.getAllOrders(1));
+            promises.push(adminAPI.getItemOrderCounts());
+        }
+
+        const results = await Promise.all(promises);
+        let resultIndex = 0;
+
+        if (shouldFetchMenuData) {
+            const menuRes = results[resultIndex++];
+            const catRes = results[resultIndex++];
+            setMenuItems(Array.isArray(menuRes.data) ? menuRes.data : []);
+            setCategories(Array.isArray(catRes.data) ? catRes.data : []);
+        }
+
+        if (shouldFetchOrderData) {
+            const ordersRes = results[resultIndex++];
+            const countsRes = results[resultIndex++];
+            const ordersList = ordersRes.data?.orders || [];
+            setOrders(Array.isArray(ordersList) ? ordersList : []);
+            setItemOrderCounts(countsRes.data || []);
+        }
+    } catch (err) {
+      console.error('Failed to load data:', err);
+    } finally {
+      setLoading(false);
+    }
   }, [activeTab]);
+
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
 
   useEffect(() => {
     let socket;
@@ -243,7 +256,7 @@ function AdminDashboard() {
         )}
         
         {!loading && activeTab === 'menu' && <MenuTab menuItems={menuItems} categories={categories} />}
-        {!loading && activeTab === 'categories' && <CategoriesTab categories={categories} />}
+        {!loading && activeTab === 'categories' && <CategoriesTab categories={categories} onDataRefresh={loadData} />}
         
         {!loading && activeTab === 'orders' && <OrdersTab orders={orders} getStatusClasses={getStatusClasses} />}
       </div>
@@ -619,7 +632,7 @@ function MenuTab({ menuItems, categories }) {
 }
 
 // Categories Tab
-function CategoriesTab({ categories }) {
+function CategoriesTab({ categories, onDataRefresh }) {
   const [newCatName, setNewCatName] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -630,6 +643,12 @@ function CategoriesTab({ categories }) {
     try {
       await categoryAPI.addCategory({ category_name: newCatName });
       setNewCatName('');
+      
+      // --- FIX 1: Call refresh callback on successful add ---
+      if (onDataRefresh) {
+        onDataRefresh();
+      }
+
       alert('Category added successfully!');
     } catch (err) {
       alert('Failed to add category: ' + (err.response?.data?.error || err.message));
@@ -640,10 +659,16 @@ function CategoriesTab({ categories }) {
 
   const handleToggleActive = async (cat) => {
     try {
+      
       await categoryAPI.updateCategory(cat.category_id, {
         category_name: cat.category_name,
         is_active: !cat.is_active
       });
+      
+      if (onDataRefresh) {
+        onDataRefresh();
+      }
+
       alert(`Category ${!cat.is_active ? 'activated' : 'deactivated'}!`);
     } catch (err) {
       console.error('Error:', err.response?.data);
@@ -677,7 +702,6 @@ function CategoriesTab({ categories }) {
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              {/* FIX: Changed ID column to # and using index + 1 for clean sequential numbering */}
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">#</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Name</th>
               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
@@ -685,9 +709,12 @@ function CategoriesTab({ categories }) {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-200">
-            {categories.map((cat, index) => ( // Added index here
-              <tr key={cat.category_id} className="hover:bg-gray-50">
-                {/* FIX: Displaying index + 1 instead of actual category_id */}
+            
+            {categories.map((cat, index) => (
+              <tr 
+                key={cat.category_id} 
+                className={`hover:bg-gray-50 ${!cat.is_active ? 'bg-red-50' : ''}`} // Optional: Highlight inactive rows
+              >
                 <td className="px-6 py-3 text-gray-900 font-bold text-sm">{index + 1}</td> 
                 <td className="px-6 py-3 text-gray-900 font-medium">{cat.category_name}</td>
                 <td className="px-6 py-3">
@@ -937,6 +964,8 @@ function OrdersTab({ orders, getStatusClasses }) {
   const [selectedOrder, setSelectedOrder] = useState(null);
   const [orderDetails, setOrderDetails] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+
+  
 
   const fetchOrderDetails = async (orderId) => {
     setLoadingDetails(true);
